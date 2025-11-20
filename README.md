@@ -1,53 +1,59 @@
 # Siftwise
 
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Mac%20%7C%20Linux-blue)
+
 **Smart file organization & archive planning CLI.**  
-Turn chaotic folders into clean, structured archives with confidence scores, rules, and residual refinement loops.
+Turn "Desktop\Stuff" chaos into clean, structured archives – with confidence scores, rules, and residual refinement passes.
 
-> Built for power users, hoarders, and anyone with a "Desktop\Stuff" problem.
-
----
-
-## ✨ What Siftwise Does
-
-- Scans a root folder and builds a **TreePlan** for how files *should* be organized
-- Classifies files into labels (e.g. `documents`, `media`, `archives`, `finance`, etc.)
-- Assigns **Actions**: `Move`, `Copy`, `Skip`, or `Suggest`
-- Writes everything to structured artifacts under a `.sift` directory:
-  - `TreePlan.json` – proposed folder structure
-  - `Mapping.csv` – one row per file with label, confidence, action, target path
-  - `PreviewCounts.csv` – summary of how many files per label/action
-- Executes moves safely with:
-  - Journaling
-  - One-shot undo
-  - Dry-run / what-if modes (planned)
-
-The core idea:  
-Run Siftwise over a messy folder → inspect the plan → execute →  
-then iteratively refine **residuals** (unknowns / low-confidence files) until the mess is gone.
+Siftwise is for people who hoard files, run out of folders, and still refuse to delete anything.  
+Instead of shaming you, it helps you clean up intelligently.
 
 ---
 
-## 🧠 Concept: Residuals
+## ✨ Key Ideas
 
-Not every file should be moved on the first pass.
+- **Plan first, move later**  
+  Siftwise scans your source folder and builds a *plan* (TreePlan + Mapping), instead of immediately shoving files around.
 
-Siftwise treats low-confidence / unknown files as **residuals**:
+- **Confidence-driven actions**  
+  Each file gets a label and confidence score. High-confidence ones get moved; low-confidence ones become **residuals** to revisit.
 
-- They are **flagged** in `Mapping.csv` (e.g. `IsResidual = True`, `Action = Skip`)
-- They are **not moved** yet
-- A later command (`refine-residuals`) re-analyzes just the residuals with tighter focus
+- **Residual refinement loops**  
+  Residuals aren’t forgotten – they’re flagged and re-analyzed in focused passes until the “mystery pile” shrinks.
 
-The vision is: each pass reduces the residual pile until very little is left unresolved.
+- **Safe execution with journaling**  
+  Moves are executed from the plan with room for dry-runs and undo (journal layer is being expanded).
 
 ---
 
-## 🚀 Quickstart
+## 🧠 How It Works (High Level)
 
-> **Status:** early alpha – core pipeline is working, but expect breaking changes.
-
-```bash
-git clone https://github.com/<your-username>/siftwise.git
-cd siftwise
-python -m venv .venv
-source .venv/bin/activate  # on Windows: .venv\Scripts\activate
-pip install -e .
+```text
+                ┌─────────────────────────────┐
+                │          Siftwise           │
+                │  "What's in this mess?"     │
+                └──────────────┬──────────────┘
+                               │
+                      draft-structure
+                               │
+               ┌───────────────┴────────────────┐
+               │                                │
+      ┌────────▼────────┐              ┌────────▼─────────┐
+      │   Analyzer      │              │    Strategy       │
+      │ (detectors,     │              │ (planner, rules,  │
+      │  tokens, etc.)  │              │  actions, targets)│
+      └────────┬────────┘              └────────┬──────────┘
+               │                                │
+      ┌────────▼────────────┐         ┌─────────▼─────────────┐
+      │  TreePlan.json      │         │   Mapping.csv          │
+      │  PreviewCounts.csv  │         │   (one row per file)   │
+      └────────┬────────────┘         └─────────┬──────────────┘
+               │                                │
+                     review-structure           │
+                                                │
+                                         execute / undo
+                                                │
+                                      refine-residuals (loop)
