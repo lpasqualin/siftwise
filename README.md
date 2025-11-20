@@ -1,3 +1,5 @@
+“Turn chaos into clean structure — intelligently, safely, and repeatably.”
+
 git clone https://github.com/lpasqualin/siftwise.git
 cd siftwise
 
