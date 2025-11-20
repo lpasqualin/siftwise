@@ -6,7 +6,7 @@ Decides Action and TargetPath for each file based on confidence, rules, and enti
 """
 
 from pathlib import Path
-from typing import Iterable, List, Dict, Any, Optional, Tuple
+from typing import Iterable, List, Dict, Any, Optional
 from collections import defaultdict
 
 # Import from sibling modules
@@ -23,26 +23,41 @@ MED_LOW = 0.50  # Medium-low - likely residual
 LOW = 0.40  # Low - definitely residual
 VERY_LOW = 0.30  # Very low - unknown/ambiguous
 
-# Default label to folder mapping
+
+# Enhanced label to folder mapping
+# Maps detector labels to destination folder paths
 LABEL_FOLDER_MAP = {
+    # Documents - text/office files
     "documents": "Documents",
     "spreadsheets": "Documents/Spreadsheets",
     "presentations": "Documents/Presentations",
     "pdfs": "Documents/PDFs",
+
+    # Media - images, videos, audio
     "media": "Media",
     "images": "Media/Images",
     "videos": "Media/Videos",
     "audio": "Media/Audio",
-    "archives": "Archives",
+
+    # Data - structured data files
     "data": "Data",
-    "code": "Code",
     "databases": "Data/Databases",
+
+    # Archives - compressed files
+    "archives": "Archives",
+
+    # Code - scripts and source files
+    "code": "Code",
+
+    # Special categories
     "payroll": "Vendors/Payroll",
     "large_files": "LargeFiles",
     "empty_files": "EmptyFiles",
     "dated_files": "DatedFiles",
+
     # Fallback
     "uncategorized": "Uncategorized",
+    "misc": "Misc",
     "": "Uncategorized",
 }
 
@@ -68,6 +83,7 @@ def build_plan(
             - use_rules: bool (default False)
             - rules_path: Path to rules.yaml (optional)
             - preserve_structure: bool (default True)
+            - scan_root: Path to original scan root (required for preserve_structure)
             - label_folder_map: dict to override default label mappings
 
     Returns:
@@ -142,7 +158,7 @@ def build_plan(
             # Use confidence-based policy
             final_action = _determine_action(confidence, final_label)
 
-        # 3b. Derive residual flag *from* final_action
+        # 3b. Derive residual flag from final_action
         # Anything that is not Move is considered residual
         is_residual = (final_action != "Move")
 
@@ -173,7 +189,7 @@ def build_plan(
         if entities:
             row['Entities'] = ', '.join(entities)
 
-        # You can still keep a residual reason if analyzer sets one
+        # Add residual reason if analyzer set one
         residual_reason = getattr(result, 'residual_reason', '')
         if residual_reason:
             row['ResidualReason'] = residual_reason
@@ -233,12 +249,13 @@ def _determine_action(confidence: float, label: str) -> str:
     # Standard confidence-based policy
     if confidence >= HIGH:  # 0.85
         return "Move"
-    elif confidence >= MED_HIGH:  # 0.75–0.85
+    elif confidence >= MED_HIGH:  # 0.75
+        return "Move"
+    elif confidence >= MED:  # 0.65
         return "Suggest"
-    elif confidence >= MED:  # 0.60–0.75
-        return "Skip"
     else:
         return "Skip"
+
 
 def _compute_target_path(
         result,
@@ -250,13 +267,40 @@ def _compute_target_path(
         scan_root: Optional[Path] = None,
 ) -> Path:
     """
-    Compute the target path for a file.
+    Compute the target path for a file with proper structure preservation.
 
     Logic:
     1. Map label to top-level folder using label_folder_map
-    2. Optionally preserve relative path structure under scan_root
-    3. (Future) entity-based organization
-    4. Return full target path
+       Example: "documents" → "Documents"
+
+    2. If preserve_structure=True and scan_root is set:
+       Preserve the relative path from scan_root inside the target bucket
+       Example:
+         Source: /Incoming/Car/Insurance/Policy.pdf
+         Label: documents
+         Scan root: /Incoming
+         Result: /Sorted/Documents/Car/Insurance/Policy.pdf
+
+    3. If preserve_structure=False or scan_root is None:
+       Flatten files directly under the target bucket
+       Example:
+         Source: /Incoming/Car/Insurance/Policy.pdf
+         Label: documents
+         Result: /Sorted/Documents/Policy.pdf
+
+    4. (Future) Entity-based organization could add another level
+
+    Args:
+        result: Analyzer Result object with .path
+        label: Detected label (e.g., "documents", "images")
+        entities: Extracted entities (future use)
+        dest_root: Destination root directory
+        preserve_structure: Whether to maintain relative paths
+        label_folder_map: Mapping from labels to folder paths
+        scan_root: Original scan root (required for preserve_structure)
+
+    Returns:
+        Full target path including filename
     """
     # 1. Get top-level folder from label
     top_folder = label_folder_map.get(label, label_folder_map.get("", "Uncategorized"))
@@ -264,19 +308,21 @@ def _compute_target_path(
     # Start with dest_root / top_folder
     target = dest_root / top_folder
 
-    # 2. Preserve relative structure under scan_root, if requested
+    # 2. Preserve relative structure if requested
     if preserve_structure and scan_root is not None:
         try:
-            # result.path must be under scan_root for this to work
+            # Get relative path from scan_root
             rel = result.path.relative_to(scan_root)
             rel_parent = rel.parent
 
-            # If there is a parent folder, append it
-            # e.g. Clients/Mirage from Incoming/Clients/Mirage/foo.pdf
+            # If there are intermediate directories, preserve them
+            # Example: Car/Insurance from Incoming/Car/Insurance/Policy.pdf
             if str(rel_parent) not in (".", ""):
                 target = target / rel_parent
         except ValueError:
-            # result.path is not under scan_root -> just flatten under top_folder
+            # result.path is not under scan_root
+            # This can happen if file is outside the original scan directory
+            # Just flatten under top_folder
             pass
 
     # 3. Add filename at the very end
@@ -284,11 +330,13 @@ def _compute_target_path(
 
     return target
 
+
 def _label_to_node_id(label: str) -> str:
     """
     Convert a label to a node ID for tree structure.
 
     Consistent with draft_structure.py's _slug function.
+    Creates URL/ID-safe identifiers.
     """
     if not label:
         return "n_uncategorized"
@@ -306,7 +354,7 @@ def _get_top_level_folder(target_path: Path, dest_root: Path) -> str:
     """
     Extract the top-level folder name from a target path.
 
-    E.g., /dest/Documents/Spreadsheets/file.xlsx -> "Documents"
+    E.g., /dest/Documents/Spreadsheets/file.xlsx → "Documents"
     """
     try:
         relative = target_path.relative_to(dest_root)

@@ -1,443 +1,438 @@
 """
-Enhanced file detectors for Siftwise analyzer.
-These detectors examine files and return classification signals.
-Now includes context-aware and pattern-learning detectors.
+Enhanced file type detection for Siftwise.
+
+Provides stronger detection through:
+- Extension-based classification with normalization
+- Keyword pattern matching in filenames
+- Directory context hints
+- Size-based special handling
+
+All detectors are explicit rule-based - no ML/embeddings.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-import re
+from typing import Optional, List
 
 
 @dataclass
 class Signal:
-    """Classification signal from a detector"""
-    label: str           # Suggested category/folder
-    confidence: float    # 0.0 to 1.0
-    method: str         # Detection method used
-    why: str            # Human-readable explanation
+    """Detection signal from a detector"""
+    label: str
+    confidence: float
+    method: str
+    why: str
 
 
 class Detector:
     """Base class for file detectors"""
-    
-    def __init__(self):
-        self.confidence_boost = 0.0  # Can be set for iteration-based boosting
-    
     def score(self, path: Path) -> Optional[Signal]:
-        """Analyze a file and return a classification signal, or None"""
+        """Return a Signal if this detector matches the file, else None"""
         raise NotImplementedError
-    
-    def adjust_confidence(self, base_confidence: float) -> float:
-        """Apply any confidence adjustments (e.g., iteration boosts)"""
-        return min(base_confidence + self.confidence_boost, 0.95)
+
+
+# Extension normalization - convert aliases to canonical forms
+EXTENSION_ALIASES = {
+    '.jpeg': '.jpg',
+    '.jpe': '.jpg',
+    '.tif': '.tiff',
+    '.htm': '.html',
+    '.mpg': '.mpeg',
+}
+
+
+# Extension to (label, confidence) mappings
+EXTENSION_LABELS = {
+    # Documents - text/office files
+    '.pdf': ('documents', 0.95),
+    '.doc': ('documents', 0.95),
+    '.docx': ('documents', 0.95),
+    '.txt': ('documents', 0.90),
+    '.rtf': ('documents', 0.90),
+    '.odt': ('documents', 0.90),
+    '.pages': ('documents', 0.90),
+    '.md': ('documents', 0.85),
+    '.log': ('documents', 0.75),
+
+    # Spreadsheets - structured data with formulas
+    '.xls': ('spreadsheets', 0.95),
+    '.xlsx': ('spreadsheets', 0.95),
+    '.ods': ('spreadsheets', 0.90),
+    '.numbers': ('spreadsheets', 0.90),
+    '.xlsm': ('spreadsheets', 0.95),
+
+    # Presentations
+    '.ppt': ('presentations', 0.95),
+    '.pptx': ('presentations', 0.95),
+    '.key': ('presentations', 0.90),
+    '.odp': ('presentations', 0.90),
+
+    # Data - structured data files
+    '.csv': ('data', 0.90),
+    '.json': ('data', 0.95),
+    '.xml': ('data', 0.90),
+    '.parquet': ('data', 0.95),
+    '.db': ('data', 0.90),
+    '.sqlite': ('data', 0.90),
+    '.sqlite3': ('data', 0.90),
+    '.sql': ('data', 0.85),
+    '.yaml': ('data', 0.85),
+    '.yml': ('data', 0.85),
+    '.toml': ('data', 0.85),
+    '.ini': ('data', 0.80),
+    '.conf': ('data', 0.75),
+
+    # Archives - compressed/bundled files
+    '.zip': ('archives', 0.95),
+    '.rar': ('archives', 0.95),
+    '.7z': ('archives', 0.95),
+    '.tar': ('archives', 0.95),
+    '.gz': ('archives', 0.95),
+    '.bz2': ('archives', 0.95),
+    '.xz': ('archives', 0.90),
+    '.dmg': ('archives', 0.85),
+    '.iso': ('archives', 0.90),
+
+    # Images
+    '.jpg': ('images', 0.95),
+    '.png': ('images', 0.95),
+    '.gif': ('images', 0.95),
+    '.bmp': ('images', 0.90),
+    '.svg': ('images', 0.90),
+    '.webp': ('images', 0.90),
+    '.ico': ('images', 0.85),
+    '.tiff': ('images', 0.90),
+    '.psd': ('images', 0.85),
+    '.ai': ('images', 0.85),
+    '.eps': ('images', 0.80),
+    '.raw': ('images', 0.85),
+    '.cr2': ('images', 0.85),
+    '.nef': ('images', 0.85),
+
+    # Videos
+    '.mp4': ('videos', 0.95),
+    '.mov': ('videos', 0.95),
+    '.avi': ('videos', 0.95),
+    '.mkv': ('videos', 0.95),
+    '.wmv': ('videos', 0.90),
+    '.flv': ('videos', 0.90),
+    '.webm': ('videos', 0.90),
+    '.m4v': ('videos', 0.90),
+    '.mpeg': ('videos', 0.90),
+
+    # Audio
+    '.mp3': ('audio', 0.95),
+    '.wav': ('audio', 0.95),
+    '.flac': ('audio', 0.95),
+    '.aac': ('audio', 0.90),
+    '.ogg': ('audio', 0.90),
+    '.m4a': ('audio', 0.90),
+    '.wma': ('audio', 0.85),
+    '.opus': ('audio', 0.85),
+    '.aiff': ('audio', 0.85),
+
+    # Code/Scripts
+    '.py': ('code', 0.95),
+    '.js': ('code', 0.95),
+    '.html': ('code', 0.90),
+    '.css': ('code', 0.90),
+    '.java': ('code', 0.95),
+    '.cpp': ('code', 0.95),
+    '.c': ('code', 0.95),
+    '.h': ('code', 0.90),
+    '.hpp': ('code', 0.90),
+    '.sh': ('code', 0.90),
+    '.bat': ('code', 0.90),
+    '.ps1': ('code', 0.90),
+    '.rb': ('code', 0.95),
+    '.php': ('code', 0.95),
+    '.go': ('code', 0.95),
+    '.rs': ('code', 0.95),
+    '.swift': ('code', 0.95),
+    '.kt': ('code', 0.95),
+    '.ts': ('code', 0.95),
+    '.jsx': ('code', 0.90),
+    '.tsx': ('code', 0.90),
+    '.vue': ('code', 0.90),
+    '.r': ('code', 0.90),
+    '.scala': ('code', 0.95),
+    '.pl': ('code', 0.90),
+    '.lua': ('code', 0.90),
+}
 
 
 class ExtensionDetector(Detector):
-    """Enhanced extension-based classification with more categories"""
-    
-    def __init__(self):
-        super().__init__()
-        self.extension_map = {
-            # Documents
-            "documents": {
-                "extensions": [".pdf", ".doc", ".docx", ".txt", ".rtf", ".odt", 
-                              ".tex", ".md", ".rst"],
-                "confidence": 0.85
-            },
-            # Spreadsheets (separate from general documents)
-            "spreadsheets": {
-                "extensions": [".xlsx", ".xls", ".csv", ".tsv", ".ods"],
-                "confidence": 0.85
-            },
-            # Code/Development
-            "code": {
-                "extensions": [".py", ".js", ".html", ".css", ".java", ".cpp", ".c", 
-                              ".h", ".jsx", ".ts", ".tsx", ".go", ".rs", ".rb",
-                              ".php", ".swift", ".kt", ".scala", ".r", ".m", ".sh",
-                              ".bat", ".ps1", ".yaml", ".yml", ".toml"],
-                "confidence": 0.90
-            },
-            # Data files
-            "data": {
-                "extensions": [".json", ".xml", ".db", ".sql", ".parquet", 
-                              ".feather", ".hdf", ".h5", ".mat", ".npy", ".pkl"],
-                "confidence": 0.85
-            },
-            # Images
-            "images": {
-                "extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", 
-                              ".ico", ".tiff", ".webp", ".raw", ".psd", ".ai"],
-                "confidence": 0.90
-            },
-            # Videos
-            "videos": {
-                "extensions": [".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", 
-                              ".webm", ".m4v", ".mpg", ".mpeg"],
-                "confidence": 0.90
-            },
-            # Audio
-            "audio": {
-                "extensions": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", 
-                              ".m4a", ".opus", ".aiff"],
-                "confidence": 0.90
-            },
-            # Archives
-            "archives": {
-                "extensions": [".zip", ".tar", ".gz", ".rar", ".7z", ".bz2", 
-                              ".xz", ".tar.gz", ".tar.bz2", ".tar.xz"],
-                "confidence": 0.95
-            },
-            # Executables
-            "executables": {
-                "extensions": [".exe", ".msi", ".app", ".deb", ".rpm", ".dmg", 
-                              ".pkg", ".appimage", ".snap"],
-                "confidence": 0.85
-            },
-            # Config files
-            "configs": {
-                "extensions": [".ini", ".cfg", ".conf", ".config", ".env", 
-                              ".properties", ".plist"],
-                "confidence": 0.75
-            },
-            # Logs
-            "logs": {
-                "extensions": [".log", ".out", ".err"],
-                "confidence": 0.70
-            }
-        }
-    
+    """
+    Primary detector - classifies files by extension.
+
+    Handles:
+    - Extension normalization (e.g., .jpeg → .jpg)
+    - Double extensions (e.g., .tar.gz)
+    - High confidence for known extensions
+    """
+
     def score(self, path: Path) -> Optional[Signal]:
-        ext = path.suffix.lower()
-        
-        # Handle compound extensions like .tar.gz
-        if path.name.lower().endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
-            return Signal(
-                label="archives",
-                confidence=self.adjust_confidence(0.95),
-                method="extension",
-                why="matched archive extension"
-            )
-        
-        if not ext:
+        if not path.is_file():
             return None
-        
-        for label, config in self.extension_map.items():
-            if ext in config["extensions"]:
-                return Signal(
-                    label=label,
-                    confidence=self.adjust_confidence(config["confidence"]),
-                    method="extension",
-                    why=f"matched {ext} extension"
-                )
-        
-        # Unknown extension - very low confidence
-        return Signal(
-            label="misc",
-            confidence=self.adjust_confidence(0.25),
-            method="extension",
-            why=f"unknown extension {ext}"
-        )
+
+        # Get extension and normalize
+        ext = path.suffix.lower()
+        original_ext = ext
+        ext = EXTENSION_ALIASES.get(ext, ext)
+
+        # Handle double extensions like .tar.gz
+        if ext == '.gz' and path.stem.endswith('.tar'):
+            ext = '.tar.gz'
+
+        # Look up in mappings
+        if ext in EXTENSION_LABELS:
+            label, confidence = EXTENSION_LABELS[ext]
+
+            # Build explanation
+            why = f"Extension '{original_ext}' matches {label}"
+            if original_ext != ext:
+                why = f"Extension '{original_ext}' (normalized to '{ext}') matches {label}"
+
+            return Signal(
+                label=label,
+                confidence=confidence,
+                method="extension",
+                why=why
+            )
+
+        return None
+
+
+# Keyword patterns for filename analysis: keyword -> (label, confidence, description)
+KEYWORD_PATTERNS = {
+    # Financial documents
+    'invoice': ('documents', 0.80, 'financial document'),
+    'receipt': ('documents', 0.80, 'financial document'),
+    'statement': ('documents', 0.75, 'financial statement'),
+    'tax': ('documents', 0.80, 'tax document'),
+    'payroll': ('payroll', 0.85, 'payroll document'),
+
+    # Legal documents
+    'contract': ('documents', 0.85, 'legal document'),
+    'agreement': ('documents', 0.85, 'legal document'),
+    'lease': ('documents', 0.85, 'legal document'),
+
+    # Personal documents
+    'resume': ('documents', 0.90, 'personal document'),
+    'cv': ('documents', 0.90, 'personal document'),
+
+    # Business documents
+    'report': ('documents', 0.75, 'business document'),
+    'proposal': ('documents', 0.80, 'business document'),
+    'presentation': ('presentations', 0.75, 'presentation'),
+    'slide': ('presentations', 0.70, 'presentation'),
+
+    # Media descriptors
+    'screenshot': ('images', 0.85, 'screen capture'),
+    'photo': ('images', 0.80, 'photograph'),
+    'picture': ('images', 0.80, 'image'),
+    'scan': ('documents', 0.75, 'scanned document'),
+
+    # Archives and backups
+    'backup': ('archives', 0.70, 'backup file'),
+    'archive': ('archives', 0.75, 'archived content'),
+
+    # Data
+    'export': ('data', 0.70, 'data export'),
+    'database': ('data', 0.80, 'database file'),
+    'dump': ('data', 0.75, 'data dump'),
+}
 
 
 class KeywordDetector(Detector):
-    """Enhanced keyword detection with more categories and patterns"""
-    
-    def __init__(self):
-        super().__init__()
-        self.keyword_patterns = {
-            "finance": {
-                "keywords": ["invoice", "receipt", "tax", "1099", "w2", "w-2", "paystub", 
-                           "statement", "bill", "expense", "budget", "financial",
-                           "payment", "transaction"],
-                "confidence": 0.75
-            },
-            "contracts": {
-                "keywords": ["contract", "agreement", "nda", "msa", "sow", "terms",
-                           "legal", "amendment", "addendum"],
-                "confidence": 0.80
-            },
-            "presentations": {
-                "keywords": ["slides", "presentation", "deck", "pitch", "keynote",
-                           "powerpoint", "ppt"],
-                "confidence": 0.70
-            },
-            "reports": {
-                "keywords": ["report", "analysis", "summary", "review", "assessment",
-                           "evaluation", "study", "findings"],
-                "confidence": 0.65
-            },
-            "resumes": {
-                "keywords": ["resume", "cv", "curriculum", "vitae", "portfolio"],
-                "confidence": 0.85
-            },
-            "personal": {
-                "keywords": ["personal", "private", "confidential", "diary", "journal"],
-                "confidence": 0.60
-            },
-            "projects": {
-                "keywords": ["project", "proposal", "plan", "roadmap", "milestone",
-                           "deliverable", "scope"],
-                "confidence": 0.65
-            },
-            "marketing": {
-                "keywords": ["marketing", "campaign", "advertising", "promotion",
-                           "brochure", "flyer", "newsletter"],
-                "confidence": 0.70
-            },
-            "medical": {
-                "keywords": ["medical", "health", "prescription", "diagnosis", 
-                           "treatment", "patient", "clinical"],
-                "confidence": 0.75
-            },
-            "education": {
-                "keywords": ["course", "syllabus", "lecture", "homework", "assignment",
-                           "exam", "quiz", "study", "notes"],
-                "confidence": 0.70
-            }
-        }
-    
+    """
+    Secondary detector - looks for meaningful keywords in filenames.
+
+    Helps classify files when extension alone is ambiguous.
+    Confidence is lower than extension-based detection.
+    """
+
     def score(self, path: Path) -> Optional[Signal]:
-        filename_lower = path.name.lower()
-        stem_lower = path.stem.lower()
-        
-        # Check both filename and stem for better matching
-        best_match = None
-        best_confidence = 0
-        
-        for label, config in self.keyword_patterns.items():
-            for keyword in config["keywords"]:
-                # Check for word boundaries to avoid partial matches
-                pattern = r'\b' + re.escape(keyword) + r'\b'
-                if re.search(pattern, filename_lower) or re.search(pattern, stem_lower):
-                    confidence = config["confidence"]
-                    
-                    # Boost confidence for exact stem matches
-                    if keyword == stem_lower:
-                        confidence = min(confidence + 0.1, 0.95)
-                    
-                    if confidence > best_confidence:
-                        best_confidence = confidence
-                        best_match = (label, keyword)
-        
-        if best_match:
-            label, keyword = best_match
+        if not path.is_file():
+            return None
+
+        filename_lower = path.stem.lower()
+
+        # Check for keyword matches
+        for keyword, (label, base_confidence, description) in KEYWORD_PATTERNS.items():
+            if keyword in filename_lower:
+                # Boost confidence slightly if keyword is at the start
+                position = filename_lower.find(keyword)
+                position_ratio = position / max(len(filename_lower), 1)
+
+                confidence_boost = 0.05 if position_ratio < 0.3 else 0.0
+                final_confidence = min(base_confidence + confidence_boost, 0.95)
+
+                return Signal(
+                    label=label,
+                    confidence=final_confidence,
+                    method="keyword",
+                    why=f"Filename contains '{keyword}' ({description})"
+                )
+
+        return None
+
+
+class DirectoryContextDetector(Detector):
+    """
+    Tertiary detector - uses parent directory names as hints.
+
+    Provides contextual clues when files are already somewhat organized.
+    Lower confidence than extension or keyword detection.
+    """
+
+    DIRECTORY_HINTS = {
+        # Document folders
+        'documents': ('documents', 0.60),
+        'docs': ('documents', 0.60),
+        'papers': ('documents', 0.55),
+
+        # Media folders
+        'photos': ('images', 0.65),
+        'pictures': ('images', 0.65),
+        'images': ('images', 0.65),
+        'screenshots': ('images', 0.70),
+        'videos': ('videos', 0.65),
+        'movies': ('videos', 0.60),
+        'music': ('audio', 0.65),
+        'audio': ('audio', 0.65),
+        'recordings': ('audio', 0.60),
+
+        # Archives
+        'archives': ('archives', 0.60),
+        'backup': ('archives', 0.55),
+        'backups': ('archives', 0.55),
+
+        # Code
+        'code': ('code', 0.60),
+        'projects': ('code', 0.50),
+        'src': ('code', 0.55),
+        'source': ('code', 0.55),
+        'scripts': ('code', 0.60),
+
+        # Data
+        'data': ('data', 0.60),
+        'database': ('data', 0.60),
+        'exports': ('data', 0.55),
+
+        # Low confidence hints
+        'downloads': ('misc', 0.35),  # Downloads are usually mixed
+    }
+
+    def score(self, path: Path) -> Optional[Signal]:
+        if not path.is_file():
+            return None
+
+        # Check parent directory names (closest parent gets priority)
+        for parent in path.parents:
+            parent_name = parent.name.lower()
+
+            if parent_name in self.DIRECTORY_HINTS:
+                label, confidence = self.DIRECTORY_HINTS[parent_name]
+                return Signal(
+                    label=label,
+                    confidence=confidence,
+                    method="directory_context",
+                    why=f"Located in '{parent.name}/' folder"
+                )
+
+        return None
+
+
+class SizeDetector(Detector):
+    """
+    Special-case detector for unusual file sizes.
+
+    Handles:
+    - Empty files (0 bytes) - always flagged
+    - Very large files (>1GB) - may need special handling
+    """
+
+    def score(self, path: Path) -> Optional[Signal]:
+        if not path.is_file():
+            return None
+
+        try:
+            size = path.stat().st_size
+        except (OSError, PermissionError):
+            return None
+
+        # Empty files - high confidence
+        if size == 0:
             return Signal(
-                label=label,
-                confidence=self.adjust_confidence(best_confidence),
-                method="keyword",
-                why=f"contains '{keyword}' in filename"
+                label="empty_files",
+                confidence=1.0,
+                method="size",
+                why="Empty file (0 bytes)"
             )
-        
+
+        # Very large files (>1GB) - may need special handling
+        if size > 1_000_000_000:
+            gb_size = size / 1_000_000_000
+            return Signal(
+                label="large_files",
+                confidence=0.85,
+                method="size",
+                why=f"Large file ({gb_size:.1f} GB)"
+            )
+
         return None
 
 
 class DatePatternDetector(Detector):
-    """Enhanced date detection with better categorization"""
-    
-    def __init__(self):
-        super().__init__()
-        # More comprehensive date patterns
-        self.date_patterns = [
-            (r'\d{4}[-_]\d{2}[-_]\d{2}', "YYYY-MM-DD", 0.50),
-            (r'\d{2}[-_]\d{2}[-_]\d{4}', "MM-DD-YYYY", 0.50),
-            (r'\d{8}', "YYYYMMDD", 0.45),
-            (r'\d{6}', "YYMMDD", 0.40),
-            (r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[-_]?\d{4}', "month-year", 0.45),
-            (r'\d{4}[-_](jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', "year-month", 0.45),
-            (r'(q1|q2|q3|q4)[-_]?\d{4}', "quarter-year", 0.55),
-            (r'\d{4}[-_](q1|q2|q3|q4)', "year-quarter", 0.55),
+    """
+    Detects files with date-based naming patterns.
+
+    Helps identify files organized by date.
+    Lower confidence - often combined with other signals.
+    """
+
+    def score(self, path: Path) -> Optional[Signal]:
+        if not path.is_file():
+            return None
+
+        filename = path.stem.lower()
+
+        # Common date patterns in filenames
+        date_patterns = [
+            r'\d{4}[-_]\d{2}[-_]\d{2}',  # YYYY-MM-DD
+            r'\d{8}',  # YYYYMMDD
+            r'\d{2}[-_]\d{2}[-_]\d{4}',  # MM-DD-YYYY
         ]
-    
-    def score(self, path: Path) -> Optional[Signal]:
-        filename_lower = path.name.lower()
-        
-        for pattern, description, confidence in self.date_patterns:
-            if re.search(pattern, filename_lower):
-                # Check for financial keywords to boost confidence
-                if any(term in filename_lower for term in ['report', 'statement', 'invoice']):
-                    confidence = min(confidence + 0.15, 0.85)
-                    label = "finance"
-                else:
-                    label = "dated_files"
-                
+
+        import re
+        for pattern in date_patterns:
+            if re.search(pattern, filename):
                 return Signal(
-                    label=label,
-                    confidence=self.adjust_confidence(confidence),
+                    label="dated_files",
+                    confidence=0.55,
                     method="date_pattern",
-                    why=f"contains date in {description}"
+                    why="Filename contains date pattern"
                 )
-        
-        return None
 
-
-class SizeBasedDetector(Detector):
-    """Enhanced size-based detection with better thresholds"""
-    
-    def score(self, path: Path) -> Optional[Signal]:
-        try:
-            size_bytes = path.stat().st_size
-            size_mb = size_bytes / (1024 * 1024)
-            
-            if size_bytes == 0:  # Empty file
-                return Signal(
-                    label="empty_files",
-                    confidence=self.adjust_confidence(0.95),
-                    method="size",
-                    why="empty file (0 bytes)"
-                )
-            elif size_bytes < 100:  # Less than 100 bytes
-                return Signal(
-                    label="empty_files",
-                    confidence=self.adjust_confidence(0.30),
-                    method="size",
-                    why=f"nearly empty ({size_bytes} bytes)"
-                )
-            elif size_mb > 500:  # Greater than 500MB
-                return Signal(
-                    label="large_files",
-                    confidence=self.adjust_confidence(0.80),
-                    method="size",
-                    why=f"very large file ({size_mb:.1f}MB)"
-                )
-            elif size_mb > 100:  # Greater than 100MB
-                return Signal(
-                    label="large_files",
-                    confidence=self.adjust_confidence(0.60),
-                    method="size",
-                    why=f"large file ({size_mb:.1f}MB)"
-                )
-        except Exception:
-            pass
-        
-        return None
-
-
-class ContextualDetector(Detector):
-    """
-    Detector that uses successful classifications as context for pattern matching.
-    This detector learns from what has already been classified successfully.
-    """
-    
-    def __init__(self, successful_classifications: Dict[str, Dict[str, Any]]):
-        super().__init__()
-        self.patterns = successful_classifications
-        self.build_fuzzy_patterns()
-    
-    def build_fuzzy_patterns(self):
-        """Build fuzzy matching patterns from successful classifications"""
-        self.fuzzy_patterns = {}
-        
-        for filename, info in self.patterns.items():
-            # Extract meaningful parts of the filename
-            parts = re.findall(r'[a-zA-Z]+|\d+', filename)
-            
-            for part in parts:
-                if len(part) >= 3:  # Only meaningful parts
-                    part_lower = part.lower()
-                    if part_lower not in self.fuzzy_patterns:
-                        self.fuzzy_patterns[part_lower] = {}
-                    
-                    label = info["label"]
-                    if label not in self.fuzzy_patterns[part_lower]:
-                        self.fuzzy_patterns[part_lower][label] = 0
-                    self.fuzzy_patterns[part_lower][label] += 1
-    
-    def score(self, path: Path) -> Optional[Signal]:
-        filename_lower = path.name.lower()
-        
-        # Direct match
-        if filename_lower in self.patterns:
-            info = self.patterns[filename_lower]
-            return Signal(
-                label=info["label"],
-                confidence=self.adjust_confidence(min(info["confidence"] * 0.9, 0.85)),
-                method="contextual",
-                why=f"matches previously classified '{filename_lower}'"
-            )
-        
-        # Stem match (without extension)
-        stem_lower = path.stem.lower()
-        if stem_lower in self.patterns:
-            info = self.patterns[stem_lower]
-            return Signal(
-                label=info["label"],
-                confidence=self.adjust_confidence(min(info["confidence"] * 0.8, 0.75)),
-                method="contextual",
-                why=f"similar to previously classified '{stem_lower}'"
-            )
-        
-        # Fuzzy pattern matching
-        parts = re.findall(r'[a-zA-Z]+|\d+', filename_lower)
-        label_scores = {}
-        
-        for part in parts:
-            if len(part) >= 3 and part in self.fuzzy_patterns:
-                for label, count in self.fuzzy_patterns[part].items():
-                    if label not in label_scores:
-                        label_scores[label] = 0
-                    label_scores[label] += count
-        
-        if label_scores:
-            best_label = max(label_scores.items(), key=lambda x: x[1])
-            if best_label[1] >= 2:  # At least 2 pattern matches
-                return Signal(
-                    label=best_label[0],
-                    confidence=self.adjust_confidence(min(0.55 + best_label[1] * 0.05, 0.75)),
-                    method="contextual",
-                    why=f"pattern similarity to {best_label[1]} classified files"
-                )
-        
-        return None
-
-
-class SiblingPatternDetector(Detector):
-    """
-    Detector that uses naming patterns extracted from successfully classified files.
-    This helps identify files that follow organizational naming conventions.
-    """
-    
-    def __init__(self, naming_patterns: Dict[str, str]):
-        super().__init__()
-        self.patterns = naming_patterns
-    
-    def score(self, path: Path) -> Optional[Signal]:
-        filename_lower = path.name.lower()
-        
-        best_match = None
-        best_pattern_length = 0
-        
-        for pattern, label in self.patterns.items():
-            if pattern in filename_lower:
-                # Longer patterns are more specific and get higher confidence
-                if len(pattern) > best_pattern_length:
-                    best_pattern_length = len(pattern)
-                    best_match = (pattern, label)
-        
-        if best_match:
-            pattern, label = best_match
-            # Confidence based on pattern length and specificity
-            base_confidence = min(0.50 + len(pattern) * 0.02, 0.80)
-            
-            return Signal(
-                label=label,
-                confidence=self.adjust_confidence(base_confidence),
-                method="sibling_pattern",
-                why=f"matches naming pattern '{pattern}'"
-            )
-        
         return None
 
 
 def get_default_detectors() -> List[Detector]:
     """
-    Return the default stack of detectors used by the analyzer.
-    Order matters - earlier detectors take precedence when confidence is equal.
+    Return the default set of detectors in priority order.
+
+    Order matters:
+    1. Extension - highest confidence, most reliable
+    2. Keyword - medium confidence, context-dependent
+    3. Directory - lower confidence, environmental hint
+    4. Size - special cases only
+    5. Date - lowest confidence, often ambiguous
     """
     return [
         ExtensionDetector(),
         KeywordDetector(),
+        DirectoryContextDetector(),
+        SizeDetector(),
         DatePatternDetector(),
-        SizeBasedDetector(),
     ]
