@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+env/
+
+# Siftwise artifacts
+.sift/
+*.log
+*.tmp
+
+# System files
+.DS_Store
+Thumbs.db
+.idea/
