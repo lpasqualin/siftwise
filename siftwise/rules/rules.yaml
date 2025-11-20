@@ -1,0 +1,198 @@
+# Siftwise Rules Configuration
+# Place this file in your destination root to customize file organization
+
+# Rules are applied in order - first match wins
+# Each rule can specify:
+#   - Matching conditions (pattern, extension, entity, etc.)
+#   - Overrides (label, action, target_folder)
+#   - Reason (for documentation)
+
+rules:
+  # =============================================================================
+  # SECURITY & SENSITIVE FILES
+  # =============================================================================
+
+  # Never move password databases
+  - extension: .kdbx
+    action: Skip
+    reason: KeePass password database - manual review required
+
+  - extension: .keychain
+    action: Skip
+    reason: macOS keychain - do not move
+
+  # SSH keys
+  - pattern: "*/.ssh/*"
+    action: Skip
+    reason: SSH keys - security sensitive
+
+  # =============================================================================
+  # VENDOR-SPECIFIC ORGANIZATION
+  # =============================================================================
+
+  # ADP payroll files
+  - pattern: "*/ADP/*"
+    label: payroll
+    action: Move
+    target_folder: Vendors/ADP
+    reason: ADP payroll documents
+
+  # QuickBooks files
+  - extension: .qbo
+    label: accounting
+    action: Move
+    target_folder: Vendors/QuickBooks
+
+  - extension: .qbw
+    label: accounting
+    action: Move
+    target_folder: Vendors/QuickBooks
+
+  # =============================================================================
+  # PROPERTY/PROJECT-BASED ORGANIZATION
+  # =============================================================================
+
+  # Files with specific property address
+  - entity: "1350 Wadsworth"
+    label: properties
+    action: Move
+    target_folder: Properties/1350-Wadsworth
+
+  # Or use pattern matching for property addresses
+  - pattern: "*/Properties/*"
+    label: properties
+    action: Move
+
+  # =============================================================================
+  # FILE TYPE SPECIFIC RULES
+  # =============================================================================
+
+  # Large video files - suggest rather than auto-move
+  - extension: .mp4
+    if_label: videos
+    action: Suggest
+    reason: Large video files should be reviewed before moving
+
+  - extension: .mov
+    if_label: videos
+    action: Suggest
+
+  # Database files - needs special handling
+  - extension: .db
+    action: Suggest
+    reason: Database file - verify no active connections
+
+  - extension: .sqlite
+    action: Suggest
+    reason: SQLite database - verify no active connections
+
+  # Temporary/backup files - always skip
+  - pattern: "*~"
+    action: Skip
+    reason: Backup file
+
+  - pattern: "*.tmp"
+    action: Skip
+    reason: Temporary file
+
+  - pattern: "*.bak"
+    action: Skip
+    reason: Backup file
+
+  # =============================================================================
+  # PROJECT/CLIENT-BASED ORGANIZATION
+  # =============================================================================
+
+  # Files with project codes (e.g., PROJ-1234)
+  - entity_pattern: "[A-Z]{2,5}-\d{3,5}"
+    label: projects
+    action: Move
+
+  # Client folders
+  - pattern: "*/Clients/*"
+    label: clients
+    action: Move
+
+  # =============================================================================
+  # YEAR/DATE-BASED ORGANIZATION
+  # =============================================================================
+
+  # Tax documents by year
+  - pattern: "*/Tax*/*"
+    entity: "2024"
+    label: taxes
+    action: Move
+    target_folder: Financial/Taxes/2024
+
+  - pattern: "*/Tax*/*"
+    entity: "2023"
+    label: taxes
+    action: Move
+    target_folder: Financial/Taxes/2023
+
+  # =============================================================================
+  # CUSTOM BUSINESS RULES
+  # =============================================================================
+
+  # Invoices
+  - pattern: "*/invoice*"
+    label: invoices
+    action: Move
+    target_folder: Financial/Invoices
+
+  - pattern: "*/Invoice*"
+    label: invoices
+    action: Move
+    target_folder: Financial/Invoices
+
+  # Contracts
+  - pattern: "*/contract*"
+    label: contracts
+    action: Move
+    target_folder: Legal/Contracts
+
+  - pattern: "*/Contract*"
+    label: contracts
+    action: Move
+    target_folder: Legal/Contracts
+
+  # =============================================================================
+  # SYSTEM FILES (built-in rules also cover these)
+  # =============================================================================
+
+  - pattern: "*/.DS_Store"
+    action: Skip
+    reason: macOS system file
+
+  - pattern: "*/Thumbs.db"
+    action: Skip
+    reason: Windows thumbnail cache
+
+  - pattern: "*/desktop.ini"
+    action: Skip
+    reason: Windows system file
+
+# =============================================================================
+# RULE SYNTAX REFERENCE
+# =============================================================================
+#
+# Matching Conditions (at least one required):
+#   extension: ".pdf"              # File extension (case-insensitive)
+#   pattern: "*/folder/*"          # Glob pattern for path
+#   regex: "regex_pattern"         # Regular expression for path
+#   entity: "entity_name"          # Exact entity match
+#   entity_pattern: "regex"        # Regex pattern for entities
+#   if_label: "current_label"      # Only apply if this is current label
+#
+# Actions (optional):
+#   label: "new_label"             # Override label
+#   action: "Move|Suggest|Skip"    # Override action
+#   target_folder: "path/to/folder" # Custom target folder
+#   reason: "explanation"          # Document why rule exists
+#
+# Special Notes:
+#   - First matching rule wins
+#   - Built-in rules are always applied first (security files)
+#   - Rules can be disabled by commenting out with #
+#   - Patterns use glob syntax: * (any chars), ? (one char)
+#   - Entity patterns use regex syntax
