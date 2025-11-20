@@ -9,6 +9,11 @@ def run(args):
     """
     Execute command entry point - validates inputs and calls executor.
 
+    Run Protocol v1: Action-driven execution
+    - Only moves files with Action == "Move"
+    - Uses TargetPath from Mapping.csv (never invents paths)
+    - Clear execution summary with accurate counts
+
     Args:
         args: argparse namespace with:
             - dest_root: destination root directory

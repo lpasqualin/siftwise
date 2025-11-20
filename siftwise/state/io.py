@@ -4,11 +4,15 @@ import csv
 import json
 
 
-def ensure_sift_dir(dest_root: Path) -> Path:
-    """
-    Ensure <dest_root>/.sift exists and return that path.
-    """
+def ensure_sift_dir(dest_root: Path, archive_existing: bool = False):
     sift_dir = dest_root / ".sift"
+
+    if sift_dir.exists() and archive_existing:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_path = dest_root / f".sift_archive_{timestamp}"
+        sift_dir.rename(archive_path)
+
     sift_dir.mkdir(parents=True, exist_ok=True)
     return sift_dir
 

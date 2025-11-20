@@ -11,6 +11,11 @@ from pathlib import Path
 def run(args):
     """
     Entry point for refine-residuals command with strategy layer integration.
+
+    Run Protocol v1: Residual-only refinement
+    - Only operates on IsResidual == True rows
+    - Never touches non-residual decisions
+    - Safe to run multiple times
     """
     from siftwise.state.io import get_sift_dir, load_mapping, update_mapping, write_residual_summary
     from siftwise.analyze.analyzer import analyze_paths
@@ -28,7 +33,7 @@ def run(args):
     mapping_rows = load_mapping(sift_dir)
     print(f"[sift] Loaded {len(mapping_rows)} files from mapping")
 
-    # 2. Filter to residual files
+    # 2. Filter to residual files (Run Protocol v1: residual-only)
     residual_rows = [
         row for row in mapping_rows
         if row.get('IsResidual', '').lower() == 'true'

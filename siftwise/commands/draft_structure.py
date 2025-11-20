@@ -12,6 +12,10 @@ from typing import Dict, Any
 def run(args):
     """
     Entry point for draft-structure command with strategy layer integration.
+
+    Run Protocol v1: Each run is a fresh, independent analysis.
+    - Archives any existing .sift before creating new artifacts
+    - No mixing of old/new mapping rows
     """
     from siftwise.state.io import ensure_sift_dir, write_treeplan, write_mapping, write_preview
     from siftwise.analyze.analyzer import analyze_paths
@@ -24,7 +28,8 @@ def run(args):
     print(f"[sift]   root      = {root}")
     print(f"[sift]   dest_root = {dest_root}")
 
-    sift_dir = ensure_sift_dir(dest_root)
+    # Run Protocol v1: Archive existing .sift, then create fresh one
+    sift_dir = ensure_sift_dir(dest_root, archive_existing=True)
     print(f"[sift]   sift_dir  = {sift_dir}")
 
     # 1. Collect files

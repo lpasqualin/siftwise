@@ -201,6 +201,7 @@ def _index_tree_paths(node: Dict, prefix_parts: List[str] = None, idx: Dict[str,
 
     return idx
 
+
 def _index_paths_from_nodes(plan: Dict[str, Any]) -> Dict[str, Path]:
     """
     Build {node_id: relative_path} mapping from a plan in this format:
@@ -247,14 +248,27 @@ def _index_paths_from_nodes(plan: Dict[str, Any]) -> Dict[str, Path]:
 
     return node_paths
 
+
 def execute_from_plan(
-    plan: Dict[str, Any],
-    mapping_rows: List[Dict[str, str]],
-    dest_root: Path,
-    what_if: bool = False,
+        plan: Dict[str, Any],
+        mapping_rows: List[Dict[str, str]],
+        dest_root: Path,
+        what_if: bool = False,
 ):
     """
-    Execute moves using a global plan with accurate counting and robust normalization.
+    Execute moves using mapping with accurate counting and robust normalization.
+
+    Run Protocol v1: Action-driven execution
+    - Only moves files with Action == "Move" (or Copy)
+    - Uses TargetPath from mapping (never invents paths)
+    - Residuals (IsResidual=True) always stay in place
+    - Skip/Suggest actions are not executed
+
+    Args:
+        plan: TreePlan dict (used for validation/context, but TargetPath is primary)
+        mapping_rows: List of mapping row dicts from Mapping.csv
+        dest_root: Destination root directory
+        what_if: If True, dry-run mode (no actual file operations)
     """
 
     # If we somehow got a JSON string, parse it.
@@ -319,25 +333,7 @@ def execute_from_plan(
         # Normalize Action
         action = _normalize_action(row.get("Action", ""), is_residual)
 
-        # Get node ID for destination
-        node_id = (row.get("NodeID") or "").strip()
-        if not node_id:
-            # Try to determine from label as a fallback
-            label = (row.get("Label") or "").lower()
-            if "document" in label:
-                node_id = "n_documents"
-            elif "archive" in label:
-                node_id = "n_archives"
-            elif "media" in label:
-                node_id = "n_media"
-            elif "code" in label:
-                node_id = "n_code"
-            elif "data" in label:
-                node_id = "n_data"
-            else:
-                node_id = "n_uncategorized"
-
-        # Decision logic
+        # Decision logic (Run Protocol v1: trust the mapping) (Run Protocol v1: trust the mapping)
         if is_residual:
             # Residuals ALWAYS stay in place
             skipped_residuals += 1
@@ -353,10 +349,21 @@ def execute_from_plan(
             continue
 
         if action in ("Move", "Copy"):
-            # Prepare operation
-            rel_path = node_paths.get(node_id, Path("uncategorized"))
-            dst_dir = dest_root / rel_path
-            dst = dst_dir / src.name
+            # Run Protocol v1: Use TargetPath from mapping, never invent it
+            target_path_str = (row.get("TargetPath") or "").strip()
+
+            if not target_path_str:
+                # No TargetPath provided - cannot execute
+                print(f"[skip] No TargetPath in mapping for: {src}")
+                skipped_by_action += 1
+                continue
+
+            dst = Path(target_path_str)
+
+            # Validate TargetPath is absolute or make it relative to dest_root
+            if not dst.is_absolute():
+                dst = dest_root / dst
+
             operations.append((src, dst, action))
 
     print(f"Processed {row_count} mapping entries")
