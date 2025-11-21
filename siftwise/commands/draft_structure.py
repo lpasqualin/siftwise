@@ -20,6 +20,7 @@ def run(args):
     from siftwise.state.io import ensure_sift_dir, write_treeplan, write_mapping, write_preview
     from siftwise.analyze.analyzer import analyze_paths
     from siftwise.strategy import build_plan, get_plan_summary
+    from siftwise.strategy.preserve import compute_preserve_mode
 
     root = Path(args.root).resolve()
     dest_root = Path(args.dest_root).resolve()
@@ -36,6 +37,9 @@ def run(args):
     print(f"[sift] Scanning {root}...")
     paths = [p for p in root.rglob("*") if p.is_file()]
     print(f"[sift] Found {len(paths)} files")
+
+    preserve_mode = compute_preserve_mode(root, paths, getattr(args, "preserve_mode", "smart"))
+    print(f"[sift] preserve_mode = {preserve_mode}")
 
     # 2. Run analyzer (first pass)
     print(f"[sift] Analyzing files...")

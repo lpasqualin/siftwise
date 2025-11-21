@@ -13,6 +13,13 @@ def main():
     p_draft.add_argument("--use-rules", action="store_true", help="Apply custom rules from rules.yaml")
     p_draft.add_argument("--explain", action="store_true", help="Include detailed explanations")
 
+    p_draft.add_argument(
+        "--preserve-mode",
+        choices=["on", "off", "smart"],
+        default="smart",
+        help="Preserve original folder structure: on, off, or smart (default)."
+    )
+
     # REVIEW
     p_review = sub.add_parser("review-structure", help="Show/edit the tree plan")
     p_review.add_argument("--dest-root", required=True, help="Destination root where <dest-root>/.sift lives")
@@ -45,6 +52,11 @@ def main():
     p_refine.add_argument(
         "--root",
         help="Incoming root used for preserve-structure logic during refinement (optional)"
+    )
+    p_refine.add_argument(
+        "--preserve-mode",
+        choices=["on", "off", "smart"],
+        default="smart"
     )
 
     # Future commands placeholder

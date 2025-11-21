@@ -376,51 +376,65 @@ def compute_folder_coherence(mapping_rows: List[Dict[str, Any]], scan_root: Opti
     return coherence
 
 
+from pathlib import Path
+
+
 def build_target_path(
-    routed: Dict[str, Any],
-    source_path: Path,
-    scan_root: Optional[Path],
-    preserve_structure: Optional[bool] = None,
-    preserve_mode: Optional[str] = None,
-    folder_coherence: Optional[Dict[Path, float]] = None,
-) -> str:
-    prefix_str = routed.get("semantic_prefix") or ""
-    prefix = Path(prefix_str) if prefix_str else Path("Unrouted")
-    filename = source_path.name
+        routed: dict,
+        source_path: Path,
+        scan_root: Path,
+        preserve_structure: bool = True,
+        preserve_mode: str = "smart",
+        folder_coherence: bool = True,
+):
+    """
+    Returns final TargetPath (string).
 
-    # Back-compat resolution
-    if preserve_mode is None:
-        if preserve_structure is None:
-            preserve_mode = "ON"
-        else:
-            preserve_mode = "ON" if preserve_structure else "OFF"
+    preserve_mode:
+      on  -> Sorted/<semantic>/<original-subpath>/<filename>
+      off -> Sorted/<semantic>/<filename>
+      smart -> should already be resolved, but we guard anyway
+    """
 
-    preserve_mode = str(preserve_mode).upper().strip()
+    # 1) Figure out semantic prefix (use whatever key your router sets)
+    semantic_prefix = (
+            routed.get("target_prefix")
+            or routed.get("semantic_prefix")
+            or routed.get("domain")
+            or "Residuals"
+    )
 
-    if not scan_root:
-        preserve_mode = "OFF"
+    # 2) Normalize mode
+    mode = (preserve_mode or "smart").lower().strip()
 
-    if preserve_mode == "OFF":
-        return str(prefix / filename)
+    # If SMART leaks through, fall back to preserve_structure
+    if mode == "smart":
+        mode = "on" if preserve_structure else "off"
 
+    # If preserve_structure is False, force OFF
+    if not preserve_structure:
+        mode = "off"
+
+    # 3) Compute original subpath safely
+    rel_subpath = Path()
     try:
-        relative_subpath = source_path.parent.relative_to(scan_root)  # type: ignore[arg-type]
+        rel_subpath = source_path.relative_to(scan_root).parent  # folders only
     except Exception:
-        relative_subpath = None
+        rel_subpath = Path()  # not under root → ignore folders
 
-    rel_part = None if (not relative_subpath or relative_subpath == Path(".")) else relative_subpath
+    # 4) Build final target
+    if mode == "on":
+        target = Path(semantic_prefix) / rel_subpath / source_path.name
+    else:
+        target = Path(semantic_prefix) / source_path.name
 
-    if preserve_mode == "SMART":
-        if rel_part is None or folder_coherence is None:
-            return str(prefix / filename)
-        coherence = folder_coherence.get(rel_part, 0.0)
-        return str(prefix / rel_part / filename) if coherence >= SMART_MIN_COHERENCE else str(prefix / filename)
+    # 5) If you already have a dest_root baked into routed, use it
+    # (Claude’s planner sometimes stores it)
+    dest_root = routed.get("dest_root")
+    if dest_root:
+        target = Path(dest_root) / target
 
-    # ON
-    if rel_part is None:
-        return str(prefix / filename)
-    return str(prefix / rel_part / filename)
-
+    return str(target)
 
 # ============================================================================
 # MAIN PLANNER FUNCTIONS

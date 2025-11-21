@@ -31,6 +31,8 @@ from .rules_engine import (
     create_rule_from_search,
 )
 
+from .preserve import compute_preserve_mode
+
 from .search import (
     search_mapping,
     search_by_pattern,
