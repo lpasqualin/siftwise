@@ -4,6 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Tuple, List, Dict, Any
+
 from siftwise.analyze.analyzer import Result
 
 
@@ -46,6 +47,7 @@ def _normalize_is_residual(residual_str: str) -> bool:
     normalized = residual_str.strip().lower()
     return normalized in ("true", "1", "yes", "y")
 
+
 def _resolve_collision(dst: Path) -> Tuple[Path, int]:
     """
     If dst exists, produce dst with __dupN appended before suffix.
@@ -65,6 +67,7 @@ def _resolve_collision(dst: Path) -> Tuple[Path, int]:
             return candidate, i
         i += 1
 
+
 def execute(results: Iterable[Result], what_if: bool, log_dir: Path) -> Path:
     """
     Execute file operations based on analyzer results.
@@ -82,111 +85,126 @@ def execute(results: Iterable[Result], what_if: bool, log_dir: Path) -> Path:
     skipped_residuals = 0
     skipped_by_error = 0
 
-    with log_path.open('w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=['Time', 'Action', 'Status', 'SourcePath', 'DestPath', 'Label', 'Confidence',
-                                          'Why', 'Note'])
+    with log_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=[
+                "Time", "Action", "Status", "SourcePath", "DestPath",
+                "Label", "Confidence", "Why", "Note"
+            ],
+        )
         w.writeheader()
 
         for r in results:
-            status, note = 'OK', ''
+            status, note = "OK", ""
 
             # Normalize action
-            is_residual = getattr(r, 'is_residual', False)
-            action = _normalize_action(r.action, is_residual)
+            is_residual = getattr(r, "is_residual", False)
+            action = _normalize_action(getattr(r, "action", ""), is_residual)
 
             # Determine destination
             dest = None
-            if action in ('Move', 'Copy'):
+            if action in ("Move", "Copy"):
                 dest = Path(r.target_path) / Path(r.path).name
 
             try:
                 if is_residual:
                     # Residuals always stay in place
-                    status = 'Residual'
-                    note = 'residual/unsorted - left in place'
+                    status = "Residual"
+                    note = "residual/unsorted - left in place"
                     skipped_residuals += 1
 
-                elif action in ('Skip', 'Suggest'):
+                elif action in ("Skip", "Suggest"):
                     # Explicit skip/suggest actions
                     status = action
                     skipped_by_action += 1
 
-                elif action in ('Move', 'Copy'):
+                elif action in ("Move", "Copy"):
                     # Check if operation is possible
                     src_path = Path(r.path)
                     if not src_path.exists():
-                        status = 'Error'
-                        note = 'Source not found'
+                        status = "Error"
+                        note = "Source not found"
                         skipped_by_error += 1
-                    elif dest and dest.exists():
-                        status = 'Error'
-                        note = 'Destination already exists'
-                        skipped_by_error += 1
-                    elif not what_if:
-                        # Perform actual operation
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        if action == 'Move':
-                            shutil.move(str(src_path), str(dest))
-                            moved += 1
-                        else:  # Copy
-                            shutil.copy2(str(src_path), str(dest))
-                            copied += 1
                     else:
-                        # Dry run
-                        if action == 'Move':
-                            moved += 1
-                        else:
-                            copied += 1
+                        # Collision-safe destination
+                        final_dest, dup_index = _resolve_collision(dest)
 
-                elif action == 'Delete':
+                        if dup_index > 0:
+                            note = f"collision rename -> {final_dest.name}"
+
+                        if not what_if:
+                            final_dest.parent.mkdir(parents=True, exist_ok=True)
+                            if action == "Move":
+                                shutil.move(str(src_path), str(final_dest))
+                                moved += 1
+                            else:  # Copy
+                                shutil.copy2(str(src_path), str(final_dest))
+                                copied += 1
+                        else:
+                            # Dry run
+                            if action == "Move":
+                                moved += 1
+                            else:
+                                copied += 1
+
+                        dest = final_dest  # for logging
+
+                elif action == "Delete":
                     # Handle delete action (rarely used)
                     if not what_if:
                         Path(r.path).unlink(missing_ok=True)
-                    status = 'Deleted'
+                    status = "Deleted"
 
                 else:
-                    status = 'Unknown'
+                    status = "Unknown"
                     skipped_by_action += 1
 
                 # Log the action
-                w.writerow({
-                    'Time': datetime.now().isoformat(),
-                    'Action': action,
-                    'Status': status,
-                    'SourcePath': str(r.path),
-                    'DestPath': str(dest) if dest else '',
-                    'Label': r.label,
-                    'Confidence': f"{r.confidence:.2f}",
-                    'Why': r.why,
-                    'Note': note
-                })
+                w.writerow(
+                    {
+                        "Time": datetime.now().isoformat(),
+                        "Action": action,
+                        "Status": status,
+                        "SourcePath": str(r.path),
+                        "DestPath": str(dest) if dest else "",
+                        "Label": getattr(r, "label", ""),
+                        "Confidence": f"{getattr(r, 'confidence', 0.0):.2f}",
+                        "Why": getattr(r, "why", ""),
+                        "Note": note,
+                    }
+                )
 
             except Exception as e:
-                w.writerow({
-                    'Time': datetime.now().isoformat(),
-                    'Action': action,
-                    'Status': 'Error',
-                    'SourcePath': str(r.path),
-                    'DestPath': str(dest) if dest else '',
-                    'Label': r.label,
-                    'Confidence': f"{r.confidence:.2f}",
-                    'Why': r.why,
-                    'Note': str(e)
-                })
+                w.writerow(
+                    {
+                        "Time": datetime.now().isoformat(),
+                        "Action": action,
+                        "Status": "Error",
+                        "SourcePath": str(r.path),
+                        "DestPath": str(dest) if dest else "",
+                        "Label": getattr(r, "label", ""),
+                        "Confidence": f"{getattr(r, 'confidence', 0.0):.2f}",
+                        "Why": getattr(r, "why", ""),
+                        "Note": str(e),
+                    }
+                )
                 skipped_by_error += 1
 
     # Print summary
-    print(f"\nLegacy executor summary:")
+    print("\nLegacy executor summary:")
     print(f"  Moved: {moved}")
     print(f"  Copied: {copied}")
-    print(f"  Skipped by action: {skipped_by_action}")
+    print(f"  Skipped by action/suggest: {skipped_by_action}")
     print(f"  Skipped by error: {skipped_by_error}")
     print(f"  Residuals left in place: {skipped_residuals}")
 
     return log_path
 
 
-def _index_tree_paths(node: Dict, prefix_parts: List[str] = None, idx: Dict[str, Path] = None) -> Dict[str, Path]:
+def _index_tree_paths(
+    node: Dict, prefix_parts: List[str] = None, idx: Dict[str, Path] = None
+) -> Dict[str, Path]:
     """
     Build {node_id: relative_path} mapping from TreePlan.json.
 
@@ -199,7 +217,9 @@ def _index_tree_paths(node: Dict, prefix_parts: List[str] = None, idx: Dict[str,
 
     # Guard against bad node types
     if not isinstance(node, dict):
-        raise TypeError(f"_index_tree_paths expected dict node, got {type(node)}: {node!r}")
+        raise TypeError(
+            f"_index_tree_paths expected dict node, got {type(node)}: {node!r}"
+        )
 
     name = node.get("name", "").strip()
     node_id = node.get("id")
@@ -268,10 +288,10 @@ def _index_paths_from_nodes(plan: Dict[str, Any]) -> Dict[str, Path]:
 
 
 def execute_from_plan(
-        plan: Dict[str, Any],
-        mapping_rows: List[Dict[str, str]],
-        dest_root: Path,
-        what_if: bool = False,
+    plan: Dict[str, Any],
+    mapping_rows: List[Dict[str, str]],
+    dest_root: Path,
+    what_if: bool = False,
 ):
     """
     Execute moves using mapping with accurate counting and robust normalization.
@@ -356,7 +376,7 @@ def execute_from_plan(
         # Normalize Action
         action = _normalize_action(row.get("Action", ""), is_residual)
 
-        # Decision logic (Run Protocol v1: trust the mapping) (Run Protocol v1: trust the mapping)
+        # Decision logic (Run Protocol v1: trust the mapping)
         if is_residual:
             # Residuals ALWAYS stay in place
             skipped_residuals += 1
@@ -396,7 +416,8 @@ def execute_from_plan(
     print(f"Processed {row_count} mapping entries")
     print(f"  - {len(operations)} files to process")
     print(f"  - {skipped_residuals} residuals to leave in place")
-    print(f"  - {skipped_by_action} files to skip by action\n")
+    print(f"  - {skipped_by_action} files to skip by action")
+    print(f"  - {suggested} files suggested (not executed)\n")
 
     # Execute operations
     moved = 0
@@ -442,19 +463,21 @@ def execute_from_plan(
             else:
                 moved += 1
 
-    # Calculate total skipped
+    # Calculate totals
     skipped_action_total = skipped_by_action + suggested
     total_skipped = skipped_action_total + skipped_by_error
 
     # Extract pass id (if present)
     pass_ids = [
-        row.get("PassId") for row in mapping_rows
+        row.get("PassId")
+        for row in mapping_rows
         if row.get("PassId") and str(row.get("PassId")).isdigit()
     ]
     pass_id = max((int(p) for p in pass_ids), default=None)
 
     elapsed_s = (datetime.now() - start_time).total_seconds()
 
+    # Canonical summary
     print(f"\n{'=' * 60}")
     print("Execution Summary:")
     print(f"  Moved:                    {moved}")
@@ -471,5 +494,7 @@ def execute_from_plan(
 
     print(f"  Elapsed (sec):            {elapsed_s:.1f}")
     print(f"\nDestination: {dest_root}")
-    print(f"Mode: {'DRY RUN - no actual changes made' if what_if else 'LIVE - files were processed'}")
+    print(
+        f"Mode: {'DRY RUN - no actual changes made' if what_if else 'LIVE - files were processed'}"
+    )
     print(f"{'=' * 60}")
