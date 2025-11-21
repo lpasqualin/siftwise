@@ -466,6 +466,7 @@ def execute_from_plan(
     # Calculate totals
     skipped_action_total = skipped_by_action + suggested
     total_skipped = skipped_action_total + skipped_by_error
+    total_files = moved + copied + total_skipped + skipped_residuals
 
     # Extract pass id (if present)
     pass_ids = [
@@ -477,16 +478,16 @@ def execute_from_plan(
 
     elapsed_s = (datetime.now() - start_time).total_seconds()
 
-    # Canonical summary
+    # ✅ Canonical summary (single source of truth)
     print(f"\n{'=' * 60}")
     print("Execution Summary:")
     print(f"  Moved:                    {moved}")
     print(f"  Copied:                   {copied}")
-    print(f"  Suggested (not executed): {suggested}")
-    print(f"  Skipped (action):         {skipped_by_action}")
+    print(f"  Skipped (action/suggest): {skipped_action_total}")
     print(f"  Skipped (errors):         {skipped_by_error}")
     print(f"  Skipped (total):          {total_skipped}")
     print(f"  Residuals left in place:  {skipped_residuals}")
+    print(f"  Total files:              {total_files}")
     print(f"  Collision renames:        {collision_renames}")
 
     if pass_id is not None:
@@ -494,24 +495,5 @@ def execute_from_plan(
 
     print(f"  Elapsed (sec):            {elapsed_s:.1f}")
     print(f"\nDestination: {dest_root}")
-    print(
-        f"Mode: {'DRY RUN - no actual changes made' if what_if else 'LIVE - files were processed'}"
-    )
+    print(f"Mode: {'DRY' if what_if else 'LIVE'}")
     print(f"{'=' * 60}")
-
-def print_summary(counts, dest_root, mode, pass_id, elapsed):
-    print("="*60)
-    print("Execution Summary:")
-    print(f"  Moved:                    {counts.moved}")
-    print(f"  Copied:                   {counts.copied}")
-    print(f"  Skipped (action/suggest): {counts.skipped_action}")
-    print(f"  Skipped (errors):         {counts.skipped_errors}")
-    print(f"  Skipped (total):          {counts.skipped_action + counts.skipped_errors}")
-    print(f"  Residuals left in place:  {counts.residuals}")
-    print(f"  Total files:              {counts.total}")
-    print()
-    print(f"Destination: {dest_root}")
-    print(f"Mode: {mode}")
-    print(f"PassId: {pass_id}")
-    print(f"Elapsed: {elapsed:.2f}s")
-    print("="*60)
