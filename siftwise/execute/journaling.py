@@ -5,7 +5,19 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from datetime import datetime
 
+class Journal:
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(self, op, src, dest=None, pass_id=None, reason=""):
+        ts = datetime.utcnow().isoformat()
+        dest_str = str(dest) if dest else ""
+        line = f"{ts} | {op} | {src} | {dest_str} | {pass_id} | {reason}\n"
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
 @dataclass
 class JournalEvent:

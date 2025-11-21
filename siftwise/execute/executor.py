@@ -498,3 +498,20 @@ def execute_from_plan(
         f"Mode: {'DRY RUN - no actual changes made' if what_if else 'LIVE - files were processed'}"
     )
     print(f"{'=' * 60}")
+
+def print_summary(counts, dest_root, mode, pass_id, elapsed):
+    print("="*60)
+    print("Execution Summary:")
+    print(f"  Moved:                    {counts.moved}")
+    print(f"  Copied:                   {counts.copied}")
+    print(f"  Skipped (action/suggest): {counts.skipped_action}")
+    print(f"  Skipped (errors):         {counts.skipped_errors}")
+    print(f"  Skipped (total):          {counts.skipped_action + counts.skipped_errors}")
+    print(f"  Residuals left in place:  {counts.residuals}")
+    print(f"  Total files:              {counts.total}")
+    print()
+    print(f"Destination: {dest_root}")
+    print(f"Mode: {mode}")
+    print(f"PassId: {pass_id}")
+    print(f"Elapsed: {elapsed:.2f}s")
+    print("="*60)
