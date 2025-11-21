@@ -26,17 +26,33 @@ def main():
     p_exec.add_argument("--what-if", action="store_true", help="Dry-run only")
 
     # REFINE-RESIDUALS (Phase 2)
-    p_refine = sub.add_parser("refine-residuals",
-                              help="Re-analyze flagged residual files to improve classification (files stay in place until confident)")
-    p_refine.add_argument("--dest-root", required=True,
-                          help="Destination root where <dest-root>/.sift lives")
-    p_refine.add_argument("--iteration", type=int, default=2,
-                          help="Refinement iteration number (for tracking)")
+    p_refine = sub.add_parser(
+        "refine-residuals",
+        help="Re-analyze flagged residual files to improve classification (files stay in place until confident)"
+    )
+    p_refine.add_argument(
+        "--dest-root",
+        required=True,
+        help="Destination root where <dest-root>/.sift lives"
+    )
+    p_refine.add_argument(
+        "--iteration",
+        type=int,
+        default=2,
+        help="Refinement iteration number (for tracking)"
+    )
+    # ✅ NEW: optional root for preserve-structure logic / smarter refinement
+    p_refine.add_argument(
+        "--root",
+        help="Incoming root used for preserve-structure logic during refinement (optional)"
+    )
 
     # Future commands placeholder
     # SEARCH (Phase 3)
-    p_search = sub.add_parser("search",
-                              help="Search for file patterns and optionally create rules (Coming Soon)")
+    p_search = sub.add_parser(
+        "search",
+        help="Search for file patterns and optionally create rules (Coming Soon)"
+    )
     p_search.add_argument("--pattern", required=True, help="Glob or regex pattern to search")
     p_search.add_argument("--dest-root", required=True, help="Destination root")
     p_search.add_argument("--residuals-only", action="store_true",
@@ -44,8 +60,10 @@ def main():
     p_search.add_argument("--make-rule", help="Create a rule assigning matches to specified folder")
 
     # DISCOVER-ENTITIES (Phase 4)
-    p_discover = sub.add_parser("discover-entities",
-                                help="Automatically discover entities (clients, projects, etc.) (Coming Soon)")
+    p_discover = sub.add_parser(
+        "discover-entities",
+        help="Automatically discover entities (clients, projects, etc.) (Coming Soon)"
+    )
     p_discover.add_argument("--dest-root", required=True, help="Destination root")
     p_discover.add_argument("--min-frequency", type=int, default=3,
                             help="Minimum frequency for entity detection")

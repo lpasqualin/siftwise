@@ -34,10 +34,10 @@ def run(args):
     print(f"[sift] Loaded {len(mapping_rows)} files from mapping")
 
     # 2. Filter to residual files (Run Protocol v1: residual-only)
-    residual_rows = [
-        row for row in mapping_rows
-        if row.get('IsResidual', '').lower() == 'true'
-    ]
+    def _is_true(v: str) -> bool:
+        return str(v).strip().lower() in ("true", "1", "yes", "y")
+
+    residual_rows = [row for row in mapping_rows if _is_true(row.get("IsResidual", ""))]
 
     if not residual_rows:
         print(f"[sift] No residual files to refine!")
@@ -66,15 +66,35 @@ def run(args):
     # 5. Use strategy layer to update the plan
     print(f"[sift] Updating plan with refined results...")
 
+
+    # Determine next PassId
+    existing_pass_ids = [
+        int(row.get("PassId"))
+        for row in mapping_rows
+        if str(row.get("PassId", "")).isdigit()
+    ]
+    next_pass_id = (max(existing_pass_ids) + 1) if existing_pass_ids else iteration
+
+    # Best-effort scan_root
+    scan_root = getattr(args, "root", None)
+    scan_root = Path(scan_root).resolve() if scan_root else None
+
     config = {
-        'use_rules': True,  # Apply rules on refinement
+        'use_rules': True,  # ok to leave True; no-op if no rules
         'preserve_structure': True,
+        'scan_root': scan_root,
+        'pass_id': next_pass_id,
     }
+    if scan_root is None:
+        config['preserve_structure'] = False
 
     # Look for rules.yaml
-    rules_path = dest_root / 'rules.yaml'
+    rules_path = sift_dir / "rules.yaml"
+    if not rules_path.exists():
+        rules_path = dest_root / "rules.yaml"  # fallback for older layouts
+
     if rules_path.exists():
-        config['rules_path'] = rules_path
+        config["rules_path"] = rules_path
 
     updated_plan = replan_residuals(
         mapping_rows=mapping_rows,
