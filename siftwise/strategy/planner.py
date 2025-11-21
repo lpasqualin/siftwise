@@ -1,492 +1,580 @@
 """
-Planner module for Siftwise strategy layer.
+Siftwise Strategy Layer - Planner v2.0 (Phase 2 Integration)
 
-Main entry point for converting analyzer results into concrete execution plans.
-Decides Action and TargetPath for each file based on confidence, rules, and entities.
+This module implements the complete Phase 2 integration:
+- 7-Step Routing Algorithm (Spec A)
+- Entity Extraction Pipeline (Spec C)
+- Structure Preservation (Spec B)
+- Multi-Pass Intelligence (Spec D)
+
+Replaces the old planner.py with spec-compliant routing logic.
 """
 
 from pathlib import Path
-from typing import Iterable, List, Dict, Any, Optional
-from collections import defaultdict
-
-# Import from sibling modules
-from .entities import extract_entities_for_result
-from .rules_engine import apply_rules, load_rules, get_builtin_rules
-
-# Import analyzer confidence thresholds
-# We'll duplicate them here to avoid circular imports
-# These should match analyzer.py constants
-HIGH = 0.85  # High confidence - definitely move
-MED_HIGH = 0.75  # Medium-high - suggest review
-MED = 0.65  # Medium - suggest review
-MED_LOW = 0.50  # Medium-low - likely residual
-LOW = 0.40  # Low - definitely residual
-VERY_LOW = 0.30  # Very low - unknown/ambiguous
+from typing import List, Dict, Any, Optional, Iterable, Tuple
+from dataclasses import dataclass
+import re
+from datetime import datetime
 
 
-# Enhanced label to folder mapping
-# Maps detector labels to destination folder paths
-LABEL_FOLDER_MAP = {
-    # Documents - text/office files
-    "documents": "Documents",
-    "spreadsheets": "Documents/Spreadsheets",
-    "presentations": "Documents/Presentations",
-    "pdfs": "Documents/PDFs",
+# ============================================================================
+# CANONICAL DIMENSIONS (Spec A)
+# ============================================================================
 
-    # Media - images, videos, audio
-    "media": "Media",
-    "images": "Media/Images",
-    "videos": "Media/Videos",
-    "audio": "Media/Audio",
+DOMAINS = [
+    "Personal", "Business", "Work", "Finance", "Projects",
+    "Health", "Legal", "Family", "Creative", "Learning",
+    "Travel", "Home", "Media", "Software", "Archive"
+]
 
-    # Data - structured data files
-    "data": "Data",
-    "databases": "Data/Databases",
+KINDS = [
+    "Photos", "Videos", "Audio", "Documents", "Notes", "Records",
+    "Receipts", "Invoices", "Statements", "Contracts", "IDs",
+    "Reports", "Summaries", "Plans", "Taxes", "Insurance",
+    "Assets", "Certificates", "Applications", "Forms",
+    "Screenshots", "Exports", "Backups", "Installers"
+]
 
-    # Archives - compressed files
-    "archives": "Archives",
+# Domain scoring hints
+DOMAIN_HINTS = {
+    "invoice": ("Finance", 0.8), "bank": ("Finance", 0.7),
+    "statement": ("Finance", 0.7), "receipt": ("Finance", 0.6),
+    "tax": ("Finance", 0.8), "payment": ("Finance", 0.6),
+    "contract": ("Legal", 0.8), "agreement": ("Legal", 0.8),
+    "medical": ("Health", 0.8), "health": ("Health", 0.8),
+    "travel": ("Travel", 0.8), "flight": ("Travel", 0.7),
+}
 
-    # Code - scripts and source files
-    "code": "Code",
+# Kind scoring hints
+KIND_HINTS = {
+    "invoice": ("Invoices", 0.9), "receipt": ("Receipts", 0.9),
+    "statement": ("Statements", 0.9), "contract": ("Contracts", 0.9),
+    "photo": ("Photos", 0.8), "video": ("Videos", 0.8),
+}
 
-    # Special categories
-    "payroll": "Vendors/Payroll",
-    "large_files": "LargeFiles",
-    "empty_files": "EmptyFiles",
-    "dated_files": "DatedFiles",
+# Label mappings
+LABEL_TO_DOMAIN = {
+    "finance": "Finance", "legal": "Legal", "health": "Health",
+    "photo": "Personal", "video": "Media", "audio": "Media",
+}
 
-    # Fallback
-    "uncategorized": "Uncategorized",
-    "misc": "Misc",
-    "": "Uncategorized",
+LABEL_TO_KIND = {
+    "finance.invoice": "Invoices", "finance.receipt": "Receipts",
+    "finance.statement": "Statements", "legal.contract": "Contracts",
+    "photo": "Photos", "video": "Videos", "audio": "Audio",
 }
 
 
-def build_plan(
-        results: Iterable,
-        dest_root: Path,
-        config: Optional[dict] = None,
-) -> dict:
+# ============================================================================
+# ENTITY EXTRACTION (Spec C)
+# ============================================================================
+
+JUNK_WORDS = {
+    "copy", "copyof", "final", "new", "scan", "export", "backup",
+    "old", "misc", "temp", "documents", "docs", "files", "folder",
+    "downloads", "desktop", "archive"
+}
+
+GENERIC_CATEGORIES = {
+    "invoices", "receipts", "statements", "contracts",
+    "photos", "videos", "documents", "reports"
+}
+
+ENTITY_MIN_SCORE = 2.0
+
+
+def extract_entity(source_path: Path, tokens: List[str], parent_tokens: List[str]) -> Tuple[Optional[str], float]:
     """
-    Main entry point for the strategy layer.
+    Entity Extraction Pipeline (5 steps from Spec C).
 
-    Takes analyzer results and produces a complete execution plan including:
-    - Action decisions (Move/Suggest/Skip) based on confidence + rules
-    - TargetPath computation based on labels + structure preferences
-    - Tree plan for visualization
-    - Statistics for reporting
-
-    Args:
-        results: Iterable of Result objects from analyzer
-        dest_root: Destination root directory for file organization
-        config: Optional config dict with:
-            - use_rules: bool (default False)
-            - rules_path: Path to rules.yaml (optional)
-            - preserve_structure: bool (default True)
-            - scan_root: Path to original scan root (required for preserve_structure)
-            - label_folder_map: dict to override default label mappings
-
-    Returns:
-        Dict with:
-        - mapping_rows: List[dict] ready for Mapping.csv
-        - tree_plan: Dict describing folder hierarchy for TreePlan.json
-        - stats: Dict with counts and metrics
+    Returns: (entity_string | None, confidence)
     """
-    # Parse config
-    config = config or {}
-    use_rules = config.get('use_rules', False)
-    rules_path = config.get('rules_path')
-    preserve_structure = config.get('preserve_structure', True)
-    label_folder_map = config.get('label_folder_map', LABEL_FOLDER_MAP)
-    scan_root = config.get('scan_root')
+    # Step 0: Build candidate pool
+    candidates = []
 
-    # Load rules if requested
-    rules = None
-    if use_rules:
-        # Load user rules
-        user_rules = load_rules(rules_path) if rules_path else {}
-        # Merge with built-in rules
-        builtin_rules = get_builtin_rules()
+    # Priority 1: Immediate parent folder
+    if source_path.parent.name:
+        candidates.append({
+            'text': source_path.parent.name,
+            'source': 'parent',
+            'position': 0
+        })
 
-        # Combine rules (user rules take precedence)
-        all_rules = builtin_rules.copy()
-        if user_rules.get('rules'):
-            all_rules['rules'] = builtin_rules.get('rules', []) + user_rules.get('rules', [])
+    # Priority 2: Filename
+    candidates.append({
+        'text': source_path.stem,
+        'source': 'filename',
+        'position': 1
+    })
 
-        rules = all_rules if all_rules.get('rules') else None
+    # Process candidates
+    scored = []
+    for cand in candidates:
+        # Step 1: Normalize
+        norm = normalize_segment(cand['text'])
+        if not norm:
+            continue
 
-    # Convert results to list if needed
-    results_list = list(results)
+        # Step 2: Hard junk filter
+        if is_junk(norm):
+            continue
 
-    # Process each result
-    mapping_rows = []
-    tree_structure = defaultdict(list)  # folder -> [files]
-    stats = {
-        'total_files': len(results_list),
-        'by_action': defaultdict(int),
-        'by_label': defaultdict(int),
-        'by_target_folder': defaultdict(int),
-        'residual_count': 0,
-        'rule_overrides': 0,
+        # Step 3: Score
+        score = score_entity_candidate(norm, cand['source'], cand['position'])
+        if score > 0:
+            scored.append({'text': norm, 'score': score})
+
+    # Step 4: Choose winner
+    if not scored:
+        return None, 0.0
+
+    scored.sort(key=lambda x: x['score'], reverse=True)
+    winner = scored[0]
+
+    if winner['score'] < ENTITY_MIN_SCORE:
+        return None, winner['score'] / ENTITY_MIN_SCORE
+
+    # Step 5: Canonicalize
+    canonical = canonicalize_entity(winner['text'])
+    confidence = min(winner['score'] / 5.0, 1.0)
+
+    return canonical, confidence
+
+
+def normalize_segment(text: str) -> str:
+    """Step 1: Normalize segment."""
+    text = text.replace('_', ' ').replace('-', ' ')
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def is_junk(text: str) -> bool:
+    """Step 2: Hard junk filter."""
+    if len(text) < 2:
+        return True
+
+    tokens = re.findall(r'[a-z0-9]+', text.lower())
+    if not tokens:
+        return True
+
+    if all(t in JUNK_WORDS for t in tokens):
+        return True
+
+    if text.lower() in GENERIC_CATEGORIES:
+        return True
+
+    if re.match(r'^(19|20)\d{2}$', text):  # Pure year
+        return True
+
+    return False
+
+
+def score_entity_candidate(text: str, source: str, position: int) -> float:
+    """Step 3: Score candidate."""
+    score = 0.0
+
+    # Base score from position
+    if source == 'parent':
+        score += 2.0
+    elif source == 'filename':
+        score += 1.0
+
+    # Boost for CamelCase/TitleCase
+    if re.search(r'[a-z][A-Z]', text):
+        score += 1.0
+
+    # Boost for address-like (numbers + words)
+    if re.search(r'\b\d{3,5}\b.*[a-zA-Z]{3,}', text):
+        score += 2.0
+
+    # Boost for capitalized words
+    if text and text[0].isupper():
+        score += 0.8
+
+    return max(score, 0.0)
+
+
+def canonicalize_entity(text: str) -> str:
+    """Step 5: Canonicalize entity string."""
+    text = re.sub(r'\s+', ' ', text.strip())
+    text = text.strip('.-_')
+
+    if text.islower():
+        text = text.title()
+
+    return text
+
+
+# ============================================================================
+# ROUTING ENGINE (Spec A - 7 Steps)
+# ============================================================================
+
+def route_file(result, root: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    7-Step Routing Algorithm.
+
+    Returns routing result with Domain, Kind, Entity, Year, etc.
+    """
+    # Extract path and basic info
+    path = result.path if hasattr(result, 'path') else Path(str(result))
+    label = result.label if hasattr(result, 'label') else ""
+    confidence = result.confidence if hasattr(result, 'confidence') else 0.0
+
+    # Step 0: Collect signals
+    tokens, parent_tokens = extract_tokens(path, root)
+
+    # Step 1: Choose Domain
+    domain = choose_domain(label, tokens, parent_tokens)
+
+    # Step 2: Choose Kind
+    kind = choose_kind(label, tokens, path.suffix)
+
+    # Step 3: Extract Entity
+    entity, entity_conf = extract_entity(path, tokens, parent_tokens)
+    if entity_conf < 0.75:
+        entity = None
+
+    # Step 4: Extract Year
+    year = extract_year(path)
+
+    # Step 5: Build semantic prefix
+    prefix = build_prefix(domain, kind, entity, year)
+
+    # Step 6: Determine action and residual status
+    action, is_residual = determine_action(confidence)
+
+    # Step 7: Build why string
+    why = build_why(domain, kind, entity, year, label, tokens)
+
+    return {
+        'source_path': str(path),
+        'domain': domain,
+        'kind': kind,
+        'entity': entity,
+        'year': year,
+        'semantic_prefix': str(prefix) if prefix else "",
+        'confidence': confidence,
+        'action': action,
+        'is_residual': is_residual,
+        'why': why,
     }
 
-    for result in results_list:
-        # 1. Extract entities
-        entities = extract_entities_for_result(result)
 
-        # 2. Apply rules (may override label and/or action)
-        current_label = result.label or ""
-        current_action = getattr(result, 'action', None)
+def extract_tokens(path: Path, root: Optional[Path]) -> Tuple[List[str], List[str]]:
+    """Extract filename and parent tokens."""
+    filename_tokens = re.findall(r'[a-z0-9]+', path.stem.lower())
 
-        final_label, action_override = apply_rules(
-            result=result,
-            current_label=current_label,
-            current_action=current_action,
-            entities=entities,
-            rules=rules,
-        )
+    parent_tokens = []
+    if root:
+        try:
+            rel = path.parent.relative_to(root)
+            for part in rel.parts:
+                parent_tokens.extend(re.findall(r'[a-z0-9]+', part.lower()))
+        except ValueError:
+            pass
 
-        if action_override:
-            stats['rule_overrides'] += 1
+    return filename_tokens, parent_tokens
 
-        # 3. Determine final action
-        confidence = result.confidence
 
-        if action_override:
-            final_action = action_override
-        else:
-            # Use confidence-based policy
-            final_action = _determine_action(confidence, final_label)
+def choose_domain(label: str, tokens: List[str], parent_tokens: List[str]) -> Optional[str]:
+    """Step 1: Choose domain."""
+    scores = {d: 0.0 for d in DOMAINS}
 
-        # 3b. Derive residual flag from final_action
-        # Anything that is not Move is considered residual
-        is_residual = (final_action != "Move")
+    # Score from label
+    for prefix, domain in LABEL_TO_DOMAIN.items():
+        if label.startswith(prefix):
+            scores[domain] += 0.7
 
-        # 4. Compute target path
-        target_path = _compute_target_path(
-            result=result,
-            label=final_label,
-            entities=entities,
-            dest_root=dest_root,
-            preserve_structure=preserve_structure,
-            label_folder_map=label_folder_map,
-            scan_root=scan_root,
-        )
+    # Score from tokens
+    for token in tokens + parent_tokens:
+        if token in DOMAIN_HINTS:
+            domain, boost = DOMAIN_HINTS[token]
+            scores[domain] += boost
 
-        # 5. Build mapping row
+    best = max(scores.items(), key=lambda x: x[1])
+    return best[0] if best[1] >= 0.4 else "Archive"
+
+
+def choose_kind(label: str, tokens: List[str], extension: str) -> Optional[str]:
+    """Step 2: Choose kind."""
+    scores = {k: 0.0 for k in KINDS}
+
+    # Score from label
+    if label in LABEL_TO_KIND:
+        scores[LABEL_TO_KIND[label]] += 0.8
+
+    # Score from tokens
+    for token in tokens:
+        if token in KIND_HINTS:
+            kind, boost = KIND_HINTS[token]
+            scores[kind] += boost
+
+    # Score from extension
+    ext = extension.lower()
+    if ext in [".jpg", ".png"]:
+        scores["Photos"] += 0.7
+    elif ext in [".mp4", ".mov"]:
+        scores["Videos"] += 0.7
+    elif ext in [".pdf", ".docx"]:
+        scores["Documents"] += 0.4
+
+    best = max(scores.items(), key=lambda x: x[1])
+    return best[0] if best[1] >= 0.3 else "Documents"
+
+
+def extract_year(path: Path) -> Optional[int]:
+    """Step 4: Extract year."""
+    current_year = datetime.now().year
+    pattern = re.compile(r'\b(19\d{2}|20\d{2})\b')
+
+    # Try filename first
+    matches = pattern.findall(path.stem)
+    for match in reversed(matches):
+        year = int(match)
+        if 1990 <= year <= current_year + 1:
+            return year
+
+    # Try parent path
+    matches = pattern.findall(str(path.parent))
+    for match in reversed(matches):
+        year = int(match)
+        if 1990 <= year <= current_year + 1:
+            return year
+
+    return None
+
+
+def build_prefix(domain: Optional[str], kind: Optional[str],
+                 entity: Optional[str], year: Optional[int]) -> Optional[Path]:
+    """Step 5: Build semantic prefix."""
+    segments = []
+    if domain:
+        segments.append(domain)
+    if kind:
+        segments.append(kind)
+    if entity:
+        segments.append(entity)
+    if year:
+        segments.append(str(year))
+
+    return Path(*segments) if segments else None
+
+
+def determine_action(confidence: float) -> Tuple[str, bool]:
+    """Step 6: Determine action and residual status."""
+    if confidence >= 0.85:
+        return "Move", False
+    elif confidence >= 0.75:
+        return "Suggest", True
+    elif confidence >= 0.60:
+        return "Skip", True
+    else:
+        return "Skip", False
+
+
+def build_why(domain, kind, entity, year, label, tokens) -> str:
+    """Step 7: Build explanation string."""
+    parts = []
+    if domain:
+        parts.append(f"Domain={domain}")
+    if kind:
+        parts.append(f"Kind={kind}")
+    if entity:
+        parts.append(f"Entity={entity}")
+    if year:
+        parts.append(f"Year={year}")
+    return ", ".join(parts) if parts else "No clear classification"
+
+
+# ============================================================================
+# STRUCTURE PRESERVATION (Spec B)
+# ============================================================================
+
+def build_target_path(routed: Dict, source_path: Path, scan_root: Optional[Path],
+                      preserve_structure: bool) -> str:
+    """
+    Apply structure preservation logic.
+
+    - ON (preserve=True): prefix / relative_subpath / filename
+    - OFF (preserve=False): prefix / filename
+    """
+    prefix_str = routed['semantic_prefix']
+    prefix = Path(prefix_str) if prefix_str else Path("Unrouted")
+    filename = source_path.name
+
+    if preserve_structure and scan_root:
+        try:
+            relative_subpath = source_path.parent.relative_to(scan_root)
+            if relative_subpath == Path("."):
+                target = prefix / filename
+            else:
+                target = prefix / relative_subpath / filename
+        except (ValueError, AttributeError):
+            target = prefix / filename
+    else:
+        target = prefix / filename
+
+    return str(target)
+
+
+# ============================================================================
+# MAIN PLANNER FUNCTIONS
+# ============================================================================
+
+def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Main entry point: Build complete execution plan.
+
+    Implements full Phase 2 integration.
+    """
+    preserve_structure = config.get('preserve_structure', True)
+    scan_root = config.get('scan_root')
+    pass_id = config.get('pass_id', 1)
+
+    mapping_rows = []
+    nodes = set()
+
+    for result in results:
+        # Route file
+        routed = route_file(result, scan_root)
+
+        # Build target path
+        source_path = Path(routed['source_path'])
+        target_path = build_target_path(routed, source_path, scan_root, preserve_structure)
+
+        # Create mapping row
         row = {
-            'SourcePath': str(result.path),
-            'NodeID': _label_to_node_id(final_label),
-            'Label': final_label or "",
-            'Confidence': f"{confidence:.2f}",
-            'Why': result.why,
-            'IsResidual': "True" if is_residual else "False",
-            'Action': final_action,
-            'TargetPath': str(target_path),
+            'SourcePath': routed['source_path'],
+            'Domain': routed['domain'] or "",
+            'Kind': routed['kind'] or "",
+            'Entity': routed['entity'] or "",
+            'Year': str(routed['year']) if routed['year'] else "",
+            'TargetPath': target_path,
+            'Confidence': f"{routed['confidence']:.2f}",
+            'Action': routed['action'],
+            'IsResidual': str(routed['is_residual']),
+            'Why': routed['why'],
+            'PassId': str(pass_id),
+            'PreviousPassId': "",
+            'PreviousAction': "",
+            'PreviousConfidence': "",
+            'PreviousTargetPath': "",
         }
-
-        # Add entities if present
-        if entities:
-            row['Entities'] = ', '.join(entities)
-
-        # Add residual reason if analyzer set one
-        residual_reason = getattr(result, 'residual_reason', '')
-        if residual_reason:
-            row['ResidualReason'] = residual_reason
 
         mapping_rows.append(row)
 
-        # 6. Update stats
-        stats['by_action'][final_action] += 1
-        stats['by_label'][final_label or 'uncategorized'] += 1
+        # Track nodes
+        if routed['domain']:
+            nodes.add(routed['domain'])
 
-        if is_residual:
-            stats['residual_count'] += 1
-
-        # Track by target folder (top-level only)
-        top_level_folder = _get_top_level_folder(target_path, dest_root)
-        stats['by_target_folder'][top_level_folder] += 1
-
-        # Build tree structure
-        tree_structure[top_level_folder].append(result.path.name)
-
-    # 7. Build tree plan
-    tree_plan = _build_tree_plan(tree_structure, dest_root, stats)
-
-    # 8. Finalize stats
-    stats['by_action'] = dict(stats['by_action'])
-    stats['by_label'] = dict(stats['by_label'])
-    stats['by_target_folder'] = dict(stats['by_target_folder'])
-    stats['residual_percentage'] = (
-        stats['residual_count'] / stats['total_files'] * 100
-        if stats['total_files'] > 0 else 0
-    )
-
-    return {
-        'mapping_rows': mapping_rows,
-        'tree_plan': tree_plan,
-        'stats': stats,
+    # Build tree plan
+    tree_plan = {
+        'root': str(dest_root),
+        'root_id': 'n_root',
+        'nodes': [{'id': 'n_root', 'name': dest_root.name, 'parent': None}]
     }
 
-
-def _determine_action(confidence: float, label: str) -> str:
-    """
-    Determine action based on confidence thresholds.
-
-    Policy:
-    - >= HIGH (0.85): Move
-    - >= MED_HIGH (0.75): Move
-    - >= MED (0.65): Suggest
-    - < MED: Skip
-
-    Special cases:
-    - empty_files, large_files: Suggest even at high confidence
-    """
-    # Special handling for certain labels
-    if label in ["empty_files", "large_files"] and confidence < HIGH:
-        return "Suggest"
-
-    # Standard confidence-based policy
-    if confidence >= HIGH:  # 0.85
-        return "Move"
-    elif confidence >= MED_HIGH:  # 0.75
-        return "Move"
-    elif confidence >= MED:  # 0.65
-        return "Suggest"
-    else:
-        return "Skip"
-
-
-def _compute_target_path(
-        result,
-        label: str,
-        entities: List[str],
-        dest_root: Path,
-        preserve_structure: bool,
-        label_folder_map: Dict[str, str],
-        scan_root: Optional[Path] = None,
-) -> Path:
-    """
-    Compute the target path for a file with proper structure preservation.
-
-    Logic:
-    1. Map label to top-level folder using label_folder_map
-       Example: "documents" → "Documents"
-
-    2. If preserve_structure=True and scan_root is set:
-       Preserve the relative path from scan_root inside the target bucket
-       Example:
-         Source: /Incoming/Car/Insurance/Policy.pdf
-         Label: documents
-         Scan root: /Incoming
-         Result: /Sorted/Documents/Car/Insurance/Policy.pdf
-
-    3. If preserve_structure=False or scan_root is None:
-       Flatten files directly under the target bucket
-       Example:
-         Source: /Incoming/Car/Insurance/Policy.pdf
-         Label: documents
-         Result: /Sorted/Documents/Policy.pdf
-
-    4. (Future) Entity-based organization could add another level
-
-    Args:
-        result: Analyzer Result object with .path
-        label: Detected label (e.g., "documents", "images")
-        entities: Extracted entities (future use)
-        dest_root: Destination root directory
-        preserve_structure: Whether to maintain relative paths
-        label_folder_map: Mapping from labels to folder paths
-        scan_root: Original scan root (required for preserve_structure)
-
-    Returns:
-        Full target path including filename
-    """
-    # 1. Get top-level folder from label
-    top_folder = label_folder_map.get(label, label_folder_map.get("", "Uncategorized"))
-
-    # Start with dest_root / top_folder
-    target = dest_root / top_folder
-
-    # 2. Preserve relative structure if requested
-    if preserve_structure and scan_root is not None:
-        try:
-            # Get relative path from scan_root
-            rel = result.path.relative_to(scan_root)
-            rel_parent = rel.parent
-
-            # If there are intermediate directories, preserve them
-            # Example: Car/Insurance from Incoming/Car/Insurance/Policy.pdf
-            if str(rel_parent) not in (".", ""):
-                target = target / rel_parent
-        except ValueError:
-            # result.path is not under scan_root
-            # This can happen if file is outside the original scan directory
-            # Just flatten under top_folder
-            pass
-
-    # 3. Add filename at the very end
-    target = target / result.path.name
-
-    return target
-
-
-def _label_to_node_id(label: str) -> str:
-    """
-    Convert a label to a node ID for tree structure.
-
-    Consistent with draft_structure.py's _slug function.
-    Creates URL/ID-safe identifiers.
-    """
-    if not label:
-        return "n_uncategorized"
-
-    # Create id-safe slug: lowercase, alnum only
-    slug = "".join(
-        ch.lower() if ch.isalnum() else "_"
-        for ch in label
-    ).strip("_") or "misc"
-
-    return f"n_{slug}"
-
-
-def _get_top_level_folder(target_path: Path, dest_root: Path) -> str:
-    """
-    Extract the top-level folder name from a target path.
-
-    E.g., /dest/Documents/Spreadsheets/file.xlsx → "Documents"
-    """
-    try:
-        relative = target_path.relative_to(dest_root)
-        return relative.parts[0] if relative.parts else "Uncategorized"
-    except ValueError:
-        return "Uncategorized"
-
-
-def _build_tree_plan(
-        tree_structure: Dict[str, List[str]],
-        dest_root: Path,
-        stats: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Build a tree plan structure for TreePlan.json.
-
-    Format:
-    {
-        "root": str(dest_root),
-        "root_id": "n_root",
-        "nodes": [
-            {"id": "n_root", "name": "Sorted", "parent": None},
-            {"id": "n_documents", "name": "Documents", "parent": "n_root"},
-            ...
-        ]
-    }
-    """
-    nodes = [
-        {"id": "n_root", "name": dest_root.name or "Sorted", "parent": None}
-    ]
-
-    # Add a node for each top-level folder
-    for folder_name in sorted(tree_structure.keys()):
-        node_id = _label_to_node_id(folder_name)
-
-        # Avoid duplicate IDs
-        if node_id not in [n["id"] for n in nodes]:
-            nodes.append({
-                "id": node_id,
-                "name": folder_name,
-                "parent": "n_root",
-            })
-
-    return {
-        "root": str(dest_root),
-        "root_id": "n_root",
-        "nodes": nodes,
-    }
-
-
-def replan_residuals(
-        mapping_rows: List[Dict[str, str]],
-        updated_results: List,
-        dest_root: Path,
-        config: Optional[dict] = None,
-) -> dict:
-    """
-    Re-plan only the residual files with updated analyzer results.
-
-    Used by refine-residuals command to update the plan without
-    disrupting non-residual files.
-
-    Args:
-        mapping_rows: Current mapping rows (all files)
-        updated_results: New Result objects for residual files
-        dest_root: Destination root
-        config: Optional config (same as build_plan)
-
-    Returns:
-        Dict with updated mapping_rows and stats
-    """
-    # Build a map of source path to updated result
-    updated_map = {str(r.path): r for r in updated_results}
-
-    # Update only the rows that have updated results
-    new_rows = []
+    # Calculate stats
     stats = {
-        'total_updated': 0,
-        'reclassified': 0,
-        'still_residual': 0,
+        'total_files': len(mapping_rows),
+        'move_count': sum(1 for r in mapping_rows if r['Action'] == 'Move'),
+        'suggest_count': sum(1 for r in mapping_rows if r['Action'] == 'Suggest'),
+        'skip_count': sum(1 for r in mapping_rows if r['Action'] == 'Skip'),
+        'residual_count': sum(1 for r in mapping_rows if r['IsResidual'] == 'True'),
+        'residual_percentage': 0.0,
     }
 
-    for row in mapping_rows:
-        source_path = row.get('SourcePath', '')
-
-        if source_path in updated_map:
-            # This file was re-analyzed
-            result = updated_map[source_path]
-
-            # Use build_plan logic for this single result
-            mini_plan = build_plan([result], dest_root, config)
-            updated_row = mini_plan['mapping_rows'][0]
-
-            new_rows.append(updated_row)
-            stats['total_updated'] += 1
-
-            # Track if still residual
-            if updated_row.get('IsResidual', '').lower() == 'true':
-                stats['still_residual'] += 1
-            else:
-                stats['reclassified'] += 1
-        else:
-            # Keep original row unchanged
-            new_rows.append(row)
+    if stats['total_files'] > 0:
+        stats['residual_percentage'] = (stats['residual_count'] / stats['total_files']) * 100
 
     return {
-        'mapping_rows': new_rows,
-        'stats': stats,
+        'tree_plan': tree_plan,
+        'mapping_rows': mapping_rows,
+        'stats': stats
     }
 
 
-def get_plan_summary(plan: dict) -> str:
+def replan_residuals(mapping_rows: List[Dict], updated_results: Iterable,
+                     dest_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate a human-readable summary of a plan.
-
-    Useful for CLI output.
+    Refinement pass for residuals (Multi-Pass Intelligence).
     """
-    stats = plan.get('stats', {})
+    preserve_structure = config.get('preserve_structure', True)
+    scan_root = config.get('scan_root')
+    pass_id = config.get('pass_id', 2)
 
+    original_by_path = {row['SourcePath']: row for row in mapping_rows}
+    updated_mapping = []
+    reclassified = 0
+    still_residual = 0
+
+    for result in updated_results:
+        source_path = str(result.path if hasattr(result, 'path') else result)
+        original = original_by_path.get(source_path)
+
+        if not original or original.get('IsResidual') != 'True':
+            if original:
+                updated_mapping.append(original)
+            continue
+
+        # Re-route
+        routed = route_file(result, scan_root)
+        target_path = build_target_path(routed, Path(source_path), scan_root, preserve_structure)
+
+        # Track changes
+        if routed['is_residual']:
+            still_residual += 1
+        else:
+            reclassified += 1
+
+        # Build row with history
+        row = {
+            'SourcePath': routed['source_path'],
+            'Domain': routed['domain'] or "",
+            'Kind': routed['kind'] or "",
+            'Entity': routed['entity'] or "",
+            'Year': str(routed['year']) if routed['year'] else "",
+            'TargetPath': target_path,
+            'Confidence': f"{routed['confidence']:.2f}",
+            'Action': routed['action'],
+            'IsResidual': str(routed['is_residual']),
+            'Why': routed['why'],
+            'PassId': str(pass_id),
+            'PreviousPassId': original.get('PassId', '1'),
+            'PreviousAction': original.get('Action', ''),
+            'PreviousConfidence': original.get('Confidence', ''),
+            'PreviousTargetPath': original.get('TargetPath', ''),
+        }
+
+        updated_mapping.append(row)
+
+    # Add non-residuals back
+    for row in mapping_rows:
+        if row.get('IsResidual') != 'True':
+            if not any(r['SourcePath'] == row['SourcePath'] for r in updated_mapping):
+                updated_mapping.append(row)
+
+    stats = {
+        'total_files': len(updated_mapping),
+        'residual_count': sum(1 for r in updated_mapping if r['IsResidual'] == 'True'),
+        'reclassified': reclassified,
+        'still_residual': still_residual,
+    }
+
+    return {
+        'mapping_rows': updated_mapping,
+        'stats': stats
+    }
+
+
+def get_plan_summary(plan: Dict[str, Any]) -> str:
+    """Generate human-readable summary."""
+    stats = plan['stats']
     lines = [
-        f"Plan Summary:",
-        f"  Total files: {stats.get('total_files', 0)}",
-        f"  Actions:",
+        f"Total files: {stats['total_files']}",
+        f"  Move: {stats.get('move_count', 0)}",
+        f"  Suggest: {stats.get('suggest_count', 0)}",
+        f"  Skip: {stats.get('skip_count', 0)}",
+        f"  Residuals: {stats['residual_count']} ({stats.get('residual_percentage', 0):.1f}%)",
     ]
-
-    for action, count in sorted(stats.get('by_action', {}).items()):
-        lines.append(f"    {action}: {count}")
-
-    lines.append(f"  Residual files: {stats.get('residual_count', 0)} "
-                 f"({stats.get('residual_percentage', 0):.1f}%)")
-
-    if stats.get('rule_overrides', 0) > 0:
-        lines.append(f"  Rule overrides: {stats.get('rule_overrides', 0)}")
-
-    return '\n'.join(lines)
+    return "\n".join(lines)
