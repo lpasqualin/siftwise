@@ -46,6 +46,24 @@ def _normalize_is_residual(residual_str: str) -> bool:
     normalized = residual_str.strip().lower()
     return normalized in ("true", "1", "yes", "y")
 
+def _resolve_collision(dst: Path) -> Tuple[Path, int]:
+    """
+    If dst exists, produce dst with __dupN appended before suffix.
+    Returns (new_path, dup_index). dup_index is 0 if no collision.
+    """
+    if not dst.exists():
+        return dst, 0
+
+    parent = dst.parent
+    stem = dst.stem
+    suffix = dst.suffix
+
+    i = 1
+    while True:
+        candidate = parent / f"{stem}__dup{i}{suffix}"
+        if not candidate.exists():
+            return candidate, i
+        i += 1
 
 def execute(results: Iterable[Result], what_if: bool, log_dir: Path) -> Path:
     """
@@ -305,10 +323,15 @@ def execute_from_plan(
     # Prepare filesystem
     dest_root.mkdir(parents=True, exist_ok=True)
 
+    start_time = datetime.now()
+
     # Prepare operation lists and counters
     operations: List[Tuple[Path, Path, str]] = []
+
     skipped_residuals = 0
     skipped_by_action = 0
+    suggested = 0
+    collision_renames = 0
 
     print("Reading mapping rows from memory...")
     row_count = 0
@@ -343,7 +366,11 @@ def execute_from_plan(
 
         if action in ("Skip", "Suggest"):
             # Explicit skip/suggest actions
-            skipped_by_action += 1
+            if action == "Suggest":
+                suggested += 1
+            else:
+                skipped_by_action += 1
+
             if what_if:
                 print(f"[{action.lower()}] Will skip: {src}")
             continue
@@ -383,28 +410,28 @@ def execute_from_plan(
             skipped_by_error += 1
             continue
 
-        # Check destination doesn't exist
-        if dst.exists():
-            print(f"[skip] already exists: {dst}")
-            skipped_by_error += 1
-            continue
+        # Collision handling: never overwrite, never silently skip
+        final_dst, dup_index = _resolve_collision(dst)
+        if dup_index > 0:
+            collision_renames += 1
+            print(f"[collision] target exists, renaming -> {final_dst.name}")
 
         # Print action
         if what_if:
-            print(f"DRY: {action} {src}  ->  {dst}")
+            print(f"DRY: {action} {src}  ->  {final_dst}")
         else:
-            print(f"{action.upper()}: {src}  ->  {dst}")
+            print(f"{action.upper()}: {src}  ->  {final_dst}")
 
-        # Perform action if not dry run
         if not what_if:
-            dst.parent.mkdir(parents=True, exist_ok=True)
+            final_dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 if action == "Copy":
-                    shutil.copy2(str(src), str(dst))
+                    shutil.copy2(str(src), str(final_dst))
                     copied += 1
                 else:  # Move
-                    shutil.move(str(src), str(dst))
+                    shutil.move(str(src), str(final_dst))
                     moved += 1
+
             except Exception as e:
                 print(f"  ERROR: {e}")
                 skipped_by_error += 1
@@ -415,18 +442,34 @@ def execute_from_plan(
             else:
                 moved += 1
 
-    # Calculate total skipped (excluding residuals for clarity)
-    total_skipped = skipped_by_action + skipped_by_error
+    # Calculate total skipped
+    skipped_action_total = skipped_by_action + suggested
+    total_skipped = skipped_action_total + skipped_by_error
 
-    # Print final summary with clear, honest counts
+    # Extract pass id (if present)
+    pass_ids = [
+        row.get("PassId") for row in mapping_rows
+        if row.get("PassId") and str(row.get("PassId")).isdigit()
+    ]
+    pass_id = max((int(p) for p in pass_ids), default=None)
+
+    elapsed_s = (datetime.now() - start_time).total_seconds()
+
     print(f"\n{'=' * 60}")
-    print(f"Execution Summary:")
+    print("Execution Summary:")
     print(f"  Moved:                    {moved}")
     print(f"  Copied:                   {copied}")
-    print(f"  Skipped (action/suggest): {skipped_by_action}")
+    print(f"  Suggested (not executed): {suggested}")
+    print(f"  Skipped (action):         {skipped_by_action}")
     print(f"  Skipped (errors):         {skipped_by_error}")
     print(f"  Skipped (total):          {total_skipped}")
     print(f"  Residuals left in place:  {skipped_residuals}")
+    print(f"  Collision renames:        {collision_renames}")
+
+    if pass_id is not None:
+        print(f"  PassId:                   {pass_id}")
+
+    print(f"  Elapsed (sec):            {elapsed_s:.1f}")
     print(f"\nDestination: {dest_root}")
     print(f"Mode: {'DRY RUN - no actual changes made' if what_if else 'LIVE - files were processed'}")
     print(f"{'=' * 60}")
