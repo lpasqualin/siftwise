@@ -42,34 +42,35 @@ def run(args):
     results = analyze_paths(paths=paths, root_out=dest_root, refinement_iteration=1)
 
     # (Optional) initial residual report based on analyzer flag, still fine
-    residual_count = sum(1 for r in results if getattr(r, 'is_residual', False))
+    residual_count = sum(1 for r in results if getattr(r, "is_residual", False))
     if residual_count > 0:
-        print(f"[sift] Identified {residual_count} residual files "
-              f"({residual_count / len(results) * 100:.1f}%)")
+        print(
+            f"[sift] Identified {residual_count} residual files "
+            f"({residual_count / len(results) * 100:.1f}%)"
+        )
 
     # 3. Build plan using strategy layer
     print(f"[sift] Building execution plan...")
 
-    # Pull flags from args
-    use_rules = getattr(args, 'use_rules', False)
-    # If you later add a CLI flag, wire it here; for now default True
-    preserve_structure = getattr(args, 'preserve_structure', True) \
-        if hasattr(args, 'preserve_structure') else True
+    use_rules = getattr(args, "use_rules", False)
 
-    # Base config for planner
+    # ✅ SINGLE config dict (do not overwrite later)
     config: Dict[str, Any] = {
-        'use_rules': use_rules,
-        'preserve_structure': preserve_structure,
-        'scan_root': root,   # 👈 this is what enables structure preservation
+        "use_rules": use_rules,
+        "scan_root": root,
+        "preserve_structure_mode": "SMART",   # <-- THIS is the key
+        "pass_id": 1,
     }
 
-    # Optional: look for rules.yaml in dest_root
-    rules_path = dest_root / 'rules.yaml'
+    # Optional: look for rules.yaml (prefer .sift, fallback dest root)
+    rules_path = sift_dir / "rules.yaml"
+    if not rules_path.exists():
+        rules_path = dest_root / "rules.yaml"
+
     if rules_path.exists():
-        config['rules_path'] = rules_path
+        config["rules_path"] = rules_path
         print(f"[sift] Loading rules from {rules_path}")
 
-    # Call strategy layer with a single, consistent config
     plan = build_plan(
         results=results,
         dest_root=dest_root,
@@ -77,15 +78,11 @@ def run(args):
     )
 
     # 4. Write artifacts
-    from_stats = plan['stats']
-
-    # DEBUG: see what we're actually about to write
-    tree_plan = plan['tree_plan']
-    print(f"[planner] tree_plan type = {type(tree_plan)}")
-    print(f"[planner] tree_plan value = {tree_plan!r}")
+    from_stats = plan["stats"]
+    tree_plan = plan["tree_plan"]
 
     write_treeplan(sift_dir, tree_plan)
-    write_mapping(sift_dir, plan['mapping_rows'])
+    write_mapping(sift_dir, plan["mapping_rows"])
     write_preview(sift_dir, from_stats)
 
     # 5. Print summary
@@ -96,5 +93,5 @@ def run(args):
     print(f"[sift]   1. Review: sift review-structure --dest-root \"{dest_root}\"")
     print(f"[sift]   2. Execute: sift execute --dest-root \"{dest_root}\"")
 
-    if from_stats.get('residual_count', 0) > 0:
-        print(f"[sift]   3. Refine: sift refine-residuals --dest-root \"{dest_root}\"")
+    if from_stats.get("residual_count", 0) > 0:
+        print(f"[sift]   3. Refine: sift refine-residuals --dest-root \"{dest_root}\" --root \"{root}\"")
