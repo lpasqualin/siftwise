@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Tuple, List, Dict, Any
-
+from siftwise.execute.journaling import get_journal
 from siftwise.analyze.analyzer import Result
 
 
@@ -308,7 +308,16 @@ def execute_from_plan(
         dest_root: Destination root directory
         what_if: If True, dry-run mode (no actual file operations)
     """
+    # NEW: Initialize journal
+    journal = get_journal(dest_root)
 
+    # Extract pass_id early for journaling
+    pass_ids = [
+        row.get("PassId")
+        for row in mapping_rows
+        if row.get("PassId") and str(row.get("PassId")).isdigit()
+    ]
+    pass_id = max((int(p) for p in pass_ids), default=None)
     # If we somehow got a JSON string, parse it.
     if isinstance(plan, str):
         print("[sift][debug] plan is a string; parsing JSON...")
@@ -378,6 +387,26 @@ def execute_from_plan(
 
         # Decision logic (Run Protocol v1: trust the mapping)
         if is_residual:
+            skipped_residuals += 1
+            if what_if:
+                print(f"[residual] Will leave in place: {src}")
+            else:
+                journal.log_skip(src, "Residual - left in place", pass_id)  # NEW
+            continue
+
+        if action in ("Skip", "Suggest"):
+            if action == "Suggest":
+                suggested += 1
+            else:
+                skipped_by_action += 1
+
+            if not what_if:
+                journal.log_skip(src, f"Action={action}", pass_id)  # NEW
+
+            if what_if:
+                print(f"[{action.lower()}] Will skip: {src}")
+            continue
+        if is_residual:
             # Residuals ALWAYS stay in place
             skipped_residuals += 1
             if what_if:
@@ -436,7 +465,8 @@ def execute_from_plan(
         if dup_index > 0:
             collision_renames += 1
             print(f"[collision] target exists, renaming -> {final_dst.name}")
-
+        if not what_if:
+            journal.log_collision(src, dst, final_dst, dup_index, pass_id)
         # Print action
         if what_if:
             print(f"DRY: {action} {src}  ->  {final_dst}")
@@ -449,13 +479,16 @@ def execute_from_plan(
                 if action == "Copy":
                     shutil.copy2(str(src), str(final_dst))
                     copied += 1
+                    journal.log_copy(src, final_dst, pass_id)
                 else:  # Move
                     shutil.move(str(src), str(final_dst))
                     moved += 1
+                    journal.log_move(src, final_dst, pass_id)
 
             except Exception as e:
                 print(f"  ERROR: {e}")
                 skipped_by_error += 1
+                journal.log_error(src, final_dst, str(e), pass_id)
         else:
             # In dry run, count what would happen
             if action == "Copy":

@@ -21,6 +21,7 @@ def run(args):
     from siftwise.analyze.analyzer import analyze_paths
     from siftwise.strategy import build_plan, get_plan_summary
     from siftwise.strategy.preserve import compute_preserve_mode
+    from siftwise.state.io import write_entities_csv, aggregate_entities_from_mapping
 
     root = Path(args.root).resolve()
     dest_root = Path(args.dest_root).resolve()
@@ -89,6 +90,14 @@ def run(args):
     write_mapping(sift_dir, plan["mapping_rows"])
     write_preview(sift_dir, from_stats)
 
+    # Generate Entities.csv from mapping
+    print(f"[sift] Generating entities aggregation...")
+    entities_data = aggregate_entities_from_mapping(plan['mapping_rows'])
+    if entities_data:
+        write_entities_csv(sift_dir, entities_data)
+        print(f"[sift] Found {len(entities_data)} unique entities")
+    else:
+        print(f"[sift] No entities detected")
     # 5. Print summary
     print(f"\n[sift] Draft complete!")
     print(get_plan_summary(plan))
@@ -99,3 +108,5 @@ def run(args):
 
     if from_stats.get("residual_count", 0) > 0:
         print(f"[sift]   3. Refine: sift refine-residuals --dest-root \"{dest_root}\" --root \"{root}\"")
+# Write tree plan
+    treeplan_path = write_treeplan(sift_dir, plan['tree_plan'])

@@ -507,6 +507,16 @@ def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Di
                 preserve_mode="SMART",
                 folder_coherence=folder_coherence,
             )
+        if routed["is_residual"]:
+            action = "RESIDUAL"
+            target_path = ""
+        else:
+            action = routed.get("action") or routed.get("Action") or "RESIDUAL"
+            target_path = routed.get("target_path") or routed.get("TargetPath") or ""
+    if routed.get("is_residual") or routed.get("IsResidual"):
+        target_path = ""
+
+    mapping_rows = resolve_collisions_in_mapping(mapping_rows)
 
     # Very minimal TreePlan (planner v2 doesn't build full nodes yet)
     tree_plan = {
@@ -624,3 +634,83 @@ def get_plan_summary(plan: Dict[str, Any]) -> str:
         f"  Residuals: {stats.get('residual_count', 0)} ({stats.get('residual_percentage', 0.0):.1f}%)",
     ]
     return "\n".join(lines)
+
+
+def detect_collisions_in_mapping(mapping_rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """
+    Pre-compute collisions within the mapping itself (deterministic).
+
+    Returns dict: {original_target_path: collision_count}
+
+    This makes collision detection deterministic - doesn't depend on
+    what's already on disk.
+    """
+    target_counts: Dict[str, int] = {}
+
+    for row in mapping_rows:
+        target = row.get("TargetPath", "").strip()
+        if not target:
+            continue
+
+        # Normalize to str for counting
+        target_counts[target] = target_counts.get(target, 0) + 1
+
+    # Return only paths that have collisions (count > 1)
+    collisions = {
+        path: count - 1  # -1 because first occurrence isn't a collision
+        for path, count in target_counts.items()
+        if count > 1
+    }
+
+    return collisions
+
+
+def resolve_collisions_in_mapping(
+        mapping_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Resolve collisions deterministically within mapping.
+
+    Modifies TargetPath for duplicate destinations by appending __dup1, __dup2, etc.
+    Adds CollisionIndex field to track renames.
+
+    Returns new mapping with collisions resolved.
+    """
+    # Track how many times we've seen each target
+    target_occurrences: Dict[str, int] = {}
+
+    resolved_rows = []
+
+    for row in mapping_rows:
+        target = row.get("TargetPath", "").strip()
+
+        if not target:
+            resolved_rows.append(row)
+            continue
+
+        # Check if we've seen this target before
+        if target in target_occurrences:
+            # Collision! Generate deterministic rename
+            dup_index = target_occurrences[target]
+            target_occurrences[target] += 1
+
+            # Rename: insert __dupN before extension
+            target_path = Path(target)
+            new_name = f"{target_path.stem}__dup{dup_index}{target_path.suffix}"
+            new_target = str(target_path.parent / new_name)
+
+            # Create new row with updated target
+            new_row = row.copy()
+            new_row["TargetPath"] = new_target
+            new_row["CollisionIndex"] = str(dup_index)
+            new_row["OriginalTargetPath"] = target
+
+            resolved_rows.append(new_row)
+        else:
+            # First occurrence - no collision
+            target_occurrences[target] = 1
+            new_row = row.copy()
+            new_row["CollisionIndex"] = "0"
+            resolved_rows.append(new_row)
+
+    return resolved_rows

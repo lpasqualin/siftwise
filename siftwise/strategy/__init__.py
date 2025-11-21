@@ -16,12 +16,12 @@ from .planner import (
     replan_residuals,
     get_plan_summary,
 )
+# strategy package exports
+from .planner import build_plan, get_plan_summary
+from .rules_engine import apply_rules, load_rules, get_builtin_rules
 
-from .entities import (
-    extract_entities_for_result,
-    extract_entities_from_paths,
-    suggest_entity_folders,
-)
+# Entities now live in analyze (Entity Extraction V1)
+from siftwise.analyze.entities import extract_entities_for_result
 
 from .rules_engine import (
     load_rules,

@@ -111,34 +111,63 @@ def normalize_entity(entity: str) -> str:
 
 def extract_entities_from_path(path: Path) -> List[str]:
     """
-    Extract potential entities from a file path.
-    
-    Uses the entities module's extraction logic.
-    
+    Extract potential entities from a file path using Entity Extraction V1.
+
+    This is used for entity matching in confidence boosting.
+    Falls back to simple extraction if entities module not available.
+
     Args:
         path: Path object to extract from
-        
+
     Returns:
         List of normalized entity strings
     """
     try:
-        from siftwise.analyze.entities import extract_entities_for_result
-        
-        # Create a minimal result-like object
+        from siftwise.analyze.entities import extract_entities_for_result, normalize_token
+
+        # Create a minimal result-like object for extraction
         class _TempResult:
             def __init__(self, p):
                 self.path = p
-        
-        entities = extract_entities_for_result(_TempResult(path))
-        return [normalize_entity(e) for e in entities]
-    
+                self.label = ""
+                self.confidence = 0.0
+
+        # Extract entities using real entity extraction
+        entity_result = extract_entities_for_result(_TempResult(path))
+
+        # Return entities found
+        entities = []
+        if entity_result.entity:
+            entities.append(normalize_token(entity_result.entity))
+
+        # Also return year if found
+        if entity_result.year:
+            entities.append(str(entity_result.year))
+
+        return entities
+
     except ImportError:
-        # Fallback: simple extraction from filename
+        # Fallback: simple extraction from filename (original placeholder logic)
         filename = path.stem.lower()
-        # Extract potential year patterns as entities
         import re
+
+        # Extract potential year patterns
         years = re.findall(r'\b(19\d{2}|20\d{2})\b', filename)
-        return years
+
+        # Extract capitalized words (potential entities)
+        entities = re.findall(r'\b[A-Z][a-z]+\b', path.stem)
+
+        return [e.lower() for e in entities] + years
+
+
+# ============================================================================
+# NOTES
+# ============================================================================
+
+# 1. This change makes entity matching in boost logic much more accurate
+# 2. Falls back gracefully if entities.py not available yet
+# 3. No other changes needed to residuals.py
+# 4. Boost logic now benefits from dictionary-based entity extraction
 
 
 def calculate_confidence_boost(
@@ -253,12 +282,11 @@ def determine_action_from_confidence(confidence: float) -> tuple[str, bool]:
         Tuple of (action, is_residual)
     """
     if confidence >= HIGH_THRESHOLD:
-        return ("Move", False)
+        return ("MOVE", False)
     elif confidence >= MED_HIGH_THRESHOLD:
-        return ("Suggest", True)
+        return ("SUGGEST", False)  # <-- THIS is the fix
     else:
-        return ("Skip", True)
-
+        return ("RESIDUAL", True)  # (or "SKIP" if you want, see note)
 
 def apply_residual_refinement(
     old_mapping_row: Dict[str, str],

@@ -64,6 +64,12 @@ def write_mapping(sift_dir: Path, rows: List[Dict[str, Any]]) -> Path:
         "Action",
         "TargetPath",
         "ResidualReason",  # <- new, but always present
+        "PassId",  # <- Residual Loop v1: track which pass created this row
+        # History chaining (Residual Loop v1)
+        "PreviousPassId",
+        "PreviousAction",
+        "PreviousConfidence",
+        "PreviousTargetPath",
     ]
 
     if not rows:
@@ -200,6 +206,12 @@ def update_mapping(
         "Action",
         "TargetPath",
         "ResidualReason",
+        "PassId",  # <- Residual Loop v1
+        # History chaining (Residual Loop v1)
+        "PreviousPassId",
+        "PreviousAction",
+        "PreviousConfidence",
+        "PreviousTargetPath",
     ]
 
     if not rows:
@@ -224,3 +236,138 @@ def update_mapping(
 
     print(f"[sift] updated Mapping.csv -> {path}")
     return path
+
+
+"""
+Extensions to io.py for Entity Extraction V1
+
+Add these functions to your existing siftwise/state/io.py file.
+They handle Entities.csv export and reading.
+"""
+
+from pathlib import Path
+from typing import Dict, Any, List
+import csv
+
+
+def write_entities_csv(sift_dir: Path, entities_data: Dict[str, Dict[str, Any]]) -> Path:
+    """
+    Write Entities.csv to the .sift directory.
+
+    Args:
+        sift_dir: Path to .sift directory
+        entities_data: Dict mapping entity_name → {kind, count, example_paths}
+
+    Returns:
+        Path to written Entities.csv
+
+    Format:
+        Entity,Kind,Count,ExamplePaths
+        Amazon,org,14,"/path/a,/path/b,/path/c"
+        NYC,place,4,"/path/x,/path/y"
+    """
+    path = sift_dir / "Entities.csv"
+
+    fieldnames = ["Entity", "Kind", "Count", "ExamplePaths"]
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        # Sort by count descending, then alphabetically
+        sorted_entities = sorted(
+            entities_data.items(),
+            key=lambda x: (-x[1]["count"], x[0])
+        )
+
+        for entity_name, data in sorted_entities:
+            example_paths_str = ",".join(data.get("example_paths", [])[:5])  # Max 5 examples
+
+            writer.writerow({
+                "Entity": entity_name,
+                "Kind": data["kind"],
+                "Count": data["count"],
+                "ExamplePaths": example_paths_str,
+            })
+
+    print(f"[sift] wrote Entities.csv -> {path} ({len(entities_data)} entities)")
+    return path
+
+
+def read_entities_csv(sift_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """
+    Read Entities.csv from the .sift directory.
+
+    Returns:
+        Dict mapping entity_name → {kind, count, example_paths}
+    """
+    path = sift_dir / "Entities.csv"
+
+    if not path.exists():
+        return {}
+
+    entities_data: Dict[str, Dict[str, Any]] = {}
+
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            entity = row["Entity"]
+            entities_data[entity] = {
+                "kind": row["Kind"],
+                "count": int(row["Count"]),
+                "example_paths": row["ExamplePaths"].split(",") if row["ExamplePaths"] else [],
+            }
+
+    return entities_data
+
+
+def aggregate_entities_from_mapping(mapping_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Aggregate entity counts from Mapping.csv rows.
+
+    Extracts Entity and Year columns and counts occurrences.
+
+    Args:
+        mapping_rows: List of mapping row dicts
+
+    Returns:
+        Dict mapping entity_name → {kind, count, example_paths}
+    """
+    entity_counts: Dict[str, Dict[str, Any]] = {}
+
+    for row in mapping_rows:
+        # Extract entity from row
+        entity = row.get("Entity", "").strip()
+
+        if not entity:
+            continue
+
+        # Determine kind from context (org/person/place/year)
+        # In v1, we'll use simple heuristics since kind isn't in Mapping.csv yet
+        kind = "unknown"
+
+        # Try to infer kind from entity characteristics
+        if entity.isupper() and len(entity) <= 4:
+            kind = "org"  # Likely acronym
+        elif any(char.isdigit() for char in entity):
+            kind = "project"  # Contains numbers, likely project code
+        elif entity.istitle():
+            kind = "person"  # TitleCase, likely person/place
+
+        # Initialize or update count
+        if entity not in entity_counts:
+            entity_counts[entity] = {
+                "kind": kind,
+                "count": 0,
+                "example_paths": [],
+            }
+
+        entity_counts[entity]["count"] += 1
+
+        # Add example path (max 5)
+        if len(entity_counts[entity]["example_paths"]) < 5:
+            source_path = row.get("SourcePath", "")
+            if source_path and source_path not in entity_counts[entity]["example_paths"]:
+                entity_counts[entity]["example_paths"].append(source_path)
+
+    return entity_counts
