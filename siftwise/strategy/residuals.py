@@ -288,43 +288,47 @@ def determine_action_from_confidence(confidence: float) -> tuple[str, bool]:
     else:
         return ("RESIDUAL", True)  # (or "SKIP" if you want, see note)
 
+
 def apply_residual_refinement(
-    old_mapping_row: Dict[str, str],
-    new_analysis_result,
-    pass_id: int,
+        old_mapping_row: Dict[str, str],
+        new_analysis_result,
+        pass_id: int,
 ) -> Dict[str, Any]:
     """
     Apply confidence boosting and promotion to a single residual row.
-    
+
     This is the main entrypoint for refining a residual file.
-    
+
     Args:
         old_mapping_row: Previous mapping CSV row (dict)
-        new_analysis_result: New analyzer Result object
+        new_analysis_result: New analyzer FileResult object
         pass_id: Current pass number (2, 3, etc.)
-        
+
     Returns:
         Updated mapping row dict with:
         - Boosted confidence
         - Updated Action/IsResidual
         - Previous* history columns populated
     """
-    # Build new routed dict from analysis result
+    # NOTE: FileResult doesn't have target_path - that's calculated by strategy layer
+    # We just work with the classification data here
+
+    # Build new routed dict from analysis result (minimal - no target_path yet)
     new_routed = {
         'Label': new_analysis_result.label,
         'Confidence': new_analysis_result.confidence,
-        'TargetPath': new_analysis_result.target_path,
+        'TargetPath': old_mapping_row.get('TargetPath', ''),  # Preserve old target for now
         'Why': new_analysis_result.why,
         'Method': new_analysis_result.method,
     }
-    
+
     # Calculate boost
     boost_result = calculate_confidence_boost(
         new_routed=new_routed,
         old_row=old_mapping_row,
         source_path=new_analysis_result.path,
     )
-    
+
     # Build updated row with history chaining
     updated_row = {
         'SourcePath': str(new_analysis_result.path),
@@ -333,23 +337,23 @@ def apply_residual_refinement(
         'Confidence': f"{boost_result.boosted_confidence:.4f}",
         'Why': new_analysis_result.why,
         'Action': boost_result.action,
-        'TargetPath': new_analysis_result.target_path,
+        'TargetPath': old_mapping_row.get('TargetPath', ''),  # Keep old target for now
         'IsResidual': str(boost_result.is_residual),
         'ResidualReason': new_analysis_result.residual_reason if boost_result.is_residual else '',
         'PassId': str(pass_id),
-        
+
         # History chaining (from old row's current values)
         'PreviousPassId': old_mapping_row.get('PassId', ''),
         'PreviousAction': old_mapping_row.get('Action', ''),
         'PreviousConfidence': old_mapping_row.get('Confidence', ''),
         'PreviousTargetPath': old_mapping_row.get('TargetPath', ''),
     }
-    
+
     # Add boost info to Why if boost was applied
     if boost_result.boost_applied > 0:
         boost_info = f" [+{boost_result.boost_applied:.2f} boost: {', '.join(boost_result.boost_reasons)}]"
         updated_row['Why'] = updated_row['Why'] + boost_info
-    
+
     return updated_row
 
 

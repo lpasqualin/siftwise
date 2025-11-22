@@ -5,8 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Tuple, List, Dict, Any
 from siftwise.execute.journaling import get_journal
-from siftwise.analyze.analyzer import Result
-
 
 def _normalize_action(action_str: str, is_residual: bool = False) -> str:
     """
@@ -66,130 +64,6 @@ def _resolve_collision(dst: Path) -> Tuple[Path, int]:
         if not candidate.exists():
             return candidate, i
         i += 1
-
-
-def execute(results: Iterable[Result], what_if: bool, log_dir: Path) -> Path:
-    """
-    Execute file operations based on analyzer results.
-    Respects the Action field - Skip/Suggest files are not moved.
-
-    This is the legacy results-based executor, kept for compatibility.
-    """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"RunLog_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-    # Counters for accurate reporting
-    moved = 0
-    copied = 0
-    skipped_by_action = 0
-    skipped_residuals = 0
-    skipped_by_error = 0
-
-    with log_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(
-            f,
-            fieldnames=[
-                "Time", "Action", "Status", "SourcePath", "DestPath",
-                "Label", "Confidence", "Why", "Note"
-            ],
-        )
-        w.writeheader()
-
-        for r in results:
-            status, note = "OK", ""
-
-            # Normalize action
-            is_residual = getattr(r, "is_residual", False)
-            action = _normalize_action(getattr(r, "action", ""), is_residual)
-
-            # Determine destination
-            dest = None
-            if action in ("Move", "Copy"):
-                dest = Path(r.target_path) / Path(r.path).name
-
-            try:
-                if is_residual:
-                    # Residuals always stay in place
-                    status = "Residual"
-                    note = "residual/unsorted - left in place"
-                    skipped_residuals += 1
-
-                elif action in ("Skip", "Suggest"):
-                    # Explicit skip/suggest actions
-                    status = action
-                    skipped_by_action += 1
-
-                elif action in ("Move", "Copy"):
-                    # Check if operation is possible
-                    src_path = Path(r.path)
-                    if not src_path.exists():
-                        status = "Error"
-                        note = "Source not found"
-                        skipped_by_error += 1
-                    else:
-                        # Collision-safe destination
-                        final_dest, dup_index = _resolve_collision(dest)
-
-                        if dup_index > 0:
-                            note = f"collision rename -> {final_dest.name}"
-
-                        if not what_if:
-                            final_dest.parent.mkdir(parents=True, exist_ok=True)
-                            if action == "Move":
-                                shutil.move(str(src_path), str(final_dest))
-                                moved += 1
-                            else:  # Copy
-                                shutil.copy2(str(src_path), str(final_dest))
-                                copied += 1
-                        else:
-                            # Dry run
-                            if action == "Move":
-                                moved += 1
-                            else:
-                                copied += 1
-
-                        dest = final_dest  # for logging
-
-                elif action == "Delete":
-                    # Handle delete action (rarely used)
-                    if not what_if:
-                        Path(r.path).unlink(missing_ok=True)
-                    status = "Deleted"
-
-                else:
-                    status = "Unknown"
-                    skipped_by_action += 1
-
-                # Log the action
-                w.writerow(
-                    {
-                        "Time": datetime.now().isoformat(),
-                        "Action": action,
-                        "Status": status,
-                        "SourcePath": str(r.path),
-                        "DestPath": str(dest) if dest else "",
-                        "Label": getattr(r, "label", ""),
-                        "Confidence": f"{getattr(r, 'confidence', 0.0):.2f}",
-                        "Why": getattr(r, "why", ""),
-                        "Note": note,
-                    }
-                )
-
-            except Exception as e:
-                w.writerow(
-                    {
-                        "Time": datetime.now().isoformat(),
-                        "Action": action,
-                        "Status": "Error",
-                        "SourcePath": str(r.path),
-                        "DestPath": str(dest) if dest else "",
-                        "Label": getattr(r, "label", ""),
-                        "Confidence": f"{getattr(r, 'confidence', 0.0):.2f}",
-                        "Why": getattr(r, "why", ""),
-                        "Note": str(e),
-                    }
-                )
-                skipped_by_error += 1
 
     # Print summary
     print("\nLegacy executor summary:")

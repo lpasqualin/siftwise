@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import csv
 import json
+from siftwise.schemas import MAPPING_CSV_FIELDS, RoutingDecision
 
 
 def ensure_sift_dir(dest_root: Path, archive_existing: bool = False):
@@ -54,23 +55,7 @@ def write_mapping(sift_dir: Path, rows: List[Dict[str, Any]]) -> Path:
     path = sift_dir / "Mapping.csv"
 
     # Core schema we care about (order matters for readability)
-    core_fields = [
-        "SourcePath",
-        "NodeID",
-        "Label",
-        "Confidence",
-        "Why",
-        "IsResidual",
-        "Action",
-        "TargetPath",
-        "ResidualReason",  # <- new, but always present
-        "PassId",  # <- Residual Loop v1: track which pass created this row
-        # History chaining (Residual Loop v1)
-        "PreviousPassId",
-        "PreviousAction",
-        "PreviousConfidence",
-        "PreviousTargetPath",
-    ]
+    core_fields = MAPPING_CSV_FIELDS
 
     if not rows:
         fieldnames = core_fields
@@ -196,23 +181,8 @@ def update_mapping(
     """
     path = Path(override_path) if override_path else (sift_dir / "Mapping.csv")
 
-    core_fields = [
-        "SourcePath",
-        "NodeID",
-        "Label",
-        "Confidence",
-        "Why",
-        "IsResidual",
-        "Action",
-        "TargetPath",
-        "ResidualReason",
-        "PassId",  # <- Residual Loop v1
-        # History chaining (Residual Loop v1)
-        "PreviousPassId",
-        "PreviousAction",
-        "PreviousConfidence",
-        "PreviousTargetPath",
-    ]
+    # Use centralized schema from schemas.py
+    core_fields = MAPPING_CSV_FIELDS
 
     if not rows:
         fieldnames = core_fields

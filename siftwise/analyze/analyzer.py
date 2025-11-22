@@ -1,7 +1,7 @@
 from dataclasses import dataclass
+from siftwise.schemas import FileResult
 from pathlib import Path
 from typing import List, Iterable, Optional, Set
-
 from .detectors import Signal, Detector, get_default_detectors
 
 # Confidence thresholds - more nuanced levels
@@ -11,19 +11,6 @@ MED = 0.65       # Medium - suggest review
 MED_LOW = 0.50   # Medium-low - likely residual
 LOW = 0.40       # Low - definitely residual
 VERY_LOW = 0.30  # Very low - unknown/ambiguous
-
-
-@dataclass
-class Result:
-    path: Path
-    label: str
-    confidence: float
-    method: str
-    why: str
-    action: str  # Move | Suggest | Skip | Copy | Delete
-    target_path: str
-    is_residual: bool = False  # Flag for residual classification
-    residual_reason: str = ""  # NEW: Explain why it's residual
 
 
 def determine_residual(label: str, confidence: float, method: str, path: Path) -> tuple[bool, str]:
@@ -72,29 +59,6 @@ def determine_residual(label: str, confidence: float, method: str, path: Path) -
     reason = "; ".join(reasons) if reasons else ""
     
     return is_residual, reason
-
-
-def choose_action(conf: float, is_residual: bool = False, label: str = "") -> str:
-    """
-    Enhanced action determination based on confidence, residual status, and category.
-    """
-    if is_residual:
-        return "Skip"  # Residuals always stay in place
-    
-    # Special handling for certain categories
-    if label in ["empty_files", "large_files"] and conf < HIGH:
-        return "Suggest"  # These often need human review
-    
-    # Confidence-based actions
-    if conf >= HIGH:
-        return "Move"
-    elif conf >= MED_HIGH:
-        return "Move"  # More aggressive moving for medium-high confidence
-    elif conf >= MED:
-        return "Suggest"
-    else:
-        return "Skip"
-
 
 def pick_label(signals: List[Signal]) -> Signal:
     """
@@ -159,7 +123,7 @@ def analyze_paths(
     root_out: Path,
     detectors: Optional[List[Detector]] = None,
     refinement_iteration: int = 1,
-) -> List[Result]:
+) -> List[FileResult]:
     """
     Enhanced analyzer with smarter residual detection and iteration awareness.
     
@@ -213,14 +177,12 @@ def analyze_paths(
         if not sigs:
             # No detector matched - definitely residual
             results.append(
-                Result(
+                FileResult(
                     path=p,
                     label="",
                     confidence=0.0,
                     method="none",
                     why="no detector matched",
-                    action="Skip",
-                    target_path=str(root_out),
                     is_residual=True,
                     residual_reason="no matching detector",
                 )
@@ -253,21 +215,15 @@ def analyze_paths(
                     method=best.method,
                     why=best.why + f" (iteration {refinement_iteration})"
                 )
-        
-        # Choose action based on enhanced logic
-        action = choose_action(best.confidence, is_residual, best.label)
-        
-        target = str(root_out / best.label) if best.label else str(root_out)
-        
+
+        # Create FileResult with classification only (no action decisions)
         results.append(
-            Result(
+            FileResult(
                 path=p,
                 label=best.label,
                 confidence=best.confidence,
                 method=best.method,
                 why=best.why,
-                action=action,
-                target_path=target,
                 is_residual=is_residual,
                 residual_reason=residual_reason,
             )
@@ -276,7 +232,7 @@ def analyze_paths(
     return results
 
 
-def get_residual_stats(results: List[Result]) -> dict:
+def get_residual_stats(results: List[FileResult]) -> dict:
     """
     Enhanced statistics about residual files for reporting.
     """

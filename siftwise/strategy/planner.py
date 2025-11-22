@@ -15,6 +15,9 @@ from typing import List, Dict, Any, Optional, Iterable, Tuple
 import re
 from datetime import datetime
 
+from siftwise.schemas import FileResult, RoutingDecision
+from siftwise.strategy.rules_engine import load_rules, apply_rules
+
 
 # ============================================================================
 # CANONICAL DIMENSIONS (Spec A)
@@ -180,14 +183,18 @@ def canonicalize_entity(text: str) -> str:
 # ROUTING ENGINE (Spec A - 7 Steps)
 # ============================================================================
 
-def route_file(result, root: Optional[Path] = None) -> Dict[str, Any]:
+def route_file(
+    result: FileResult,
+    root: Optional[Path] = None,
+    rules: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    7-Step Routing Algorithm.
+    7-Step Routing Algorithm with Rules Integration.
     Returns routing result with Domain, Kind, Entity, Year, etc.
     """
-    path = result.path if hasattr(result, "path") else Path(str(result))
-    label = result.label if hasattr(result, "label") else ""
-    confidence = result.confidence if hasattr(result, "confidence") else 0.0
+    path = result.path
+    label = result.label
+    confidence = result.confidence
 
     tokens, parent_tokens = extract_tokens(path, root)
 
@@ -201,8 +208,28 @@ def route_file(result, root: Optional[Path] = None) -> Dict[str, Any]:
     year = extract_year(path)
     prefix = build_prefix(domain, kind, entity, year)
 
-    action, is_residual = determine_action(confidence)
+    # Determine action (strategy layer owns this)
+    action, is_residual = determine_action(confidence, result.is_residual, label)
+
+    # Apply rules if provided
+    if rules:
+        entities_list = [entity] if entity else []
+        domain_override, action_override = apply_rules(
+            result=result,
+            current_label=domain or "Archive",
+            current_action=action,
+            entities=entities_list,
+            rules=rules
+        )
+        if domain_override != (domain or "Archive"):
+            domain = domain_override
+        if action_override:
+            action = action_override
+
     why = build_why(domain, kind, entity, year, label, tokens)
+
+    if rules and domain_override:
+        why += " [rules applied]"
 
     return {
         "source_path": str(path),
@@ -307,15 +334,27 @@ def build_prefix(domain: Optional[str], kind: Optional[str], entity: Optional[st
     return Path(*segments) if segments else None
 
 
-def determine_action(confidence: float) -> Tuple[str, bool]:
+def determine_action(confidence: float, is_residual: bool, label: str = "") -> Tuple[str, bool]:
+    """
+    Determine action and residual status based on confidence.
+
+    Strategy layer owns this logic - analyzer just classifies.
+    """
+    # Residuals always skip
+    if is_residual:
+        return "Skip", True
+
+    # Special handling for empty/large files
+    if label in ["empty_files", "large_files"]:
+        return "Suggest", False
+
+    # Confidence-based actions
     if confidence >= 0.85:
         return "Move", False
     elif confidence >= 0.75:
-        return "Suggest", True
-    elif confidence >= 0.60:
-        return "Skip", True
+        return "Suggest", False
     else:
-        return "Skip", False
+        return "Skip", True
 
 
 def build_why(domain, kind, entity, year, label, tokens) -> str:
@@ -376,83 +415,76 @@ def compute_folder_coherence(mapping_rows: List[Dict[str, Any]], scan_root: Opti
     return coherence
 
 
-from pathlib import Path
-
-
 def build_target_path(
-        routed: dict,
-        source_path: Path,
-        scan_root: Path,
-        preserve_structure: bool = True,
-        preserve_mode: str = "smart",
-        folder_coherence: bool = True,
-):
-    """
-    Returns final TargetPath (string).
+    routed: Dict[str, Any],
+    source_path: Path,
+    scan_root: Optional[Path],
+    preserve_structure: Optional[bool] = None,
+    preserve_mode: Optional[str] = None,
+    folder_coherence: Optional[Dict[Path, float]] = None,
+) -> str:
+    prefix_str = routed.get("semantic_prefix") or ""
+    prefix = Path(prefix_str) if prefix_str else Path("Unrouted")
+    filename = source_path.name
 
-    preserve_mode:
-      on  -> Sorted/<semantic>/<original-subpath>/<filename>
-      off -> Sorted/<semantic>/<filename>
-      smart -> should already be resolved, but we guard anyway
-    """
+    # Back-compat resolution
+    if preserve_mode is None:
+        if preserve_structure is None:
+            preserve_mode = "ON"
+        else:
+            preserve_mode = "ON" if preserve_structure else "OFF"
 
-    # 1) Figure out semantic prefix (use whatever key your router sets)
-    semantic_prefix = (
-            routed.get("target_prefix")
-            or routed.get("semantic_prefix")
-            or routed.get("domain")
-            or "Residuals"
-    )
+    preserve_mode = str(preserve_mode).upper().strip()
 
-    # 2) Normalize mode
-    mode = (preserve_mode or "smart").lower().strip()
+    if not scan_root:
+        preserve_mode = "OFF"
 
-    # If SMART leaks through, fall back to preserve_structure
-    if mode == "smart":
-        mode = "on" if preserve_structure else "off"
+    if preserve_mode == "OFF":
+        return str(prefix / filename)
 
-    # If preserve_structure is False, force OFF
-    if not preserve_structure:
-        mode = "off"
-
-    # 3) Compute original subpath safely
-    rel_subpath = Path()
     try:
-        rel_subpath = source_path.relative_to(scan_root).parent  # folders only
+        relative_subpath = source_path.parent.relative_to(scan_root)
     except Exception:
-        rel_subpath = Path()  # not under root → ignore folders
+        relative_subpath = None
 
-    # 4) Build final target
-    if mode == "on":
-        target = Path(semantic_prefix) / rel_subpath / source_path.name
-    else:
-        target = Path(semantic_prefix) / source_path.name
+    rel_part = None if (not relative_subpath or relative_subpath == Path(".")) else relative_subpath
 
-    # 5) If you already have a dest_root baked into routed, use it
-    # (Claude’s planner sometimes stores it)
-    dest_root = routed.get("dest_root")
-    if dest_root:
-        target = Path(dest_root) / target
+    if preserve_mode == "SMART":
+        if rel_part is None or folder_coherence is None:
+            return str(prefix / filename)
+        coherence = folder_coherence.get(rel_part, 0.0)
+        return str(prefix / rel_part / filename) if coherence >= SMART_MIN_COHERENCE else str(prefix / filename)
 
-    return str(target)
+    # ON
+    if rel_part is None:
+        return str(prefix / filename)
+    return str(prefix / rel_part / filename)
+
 
 # ============================================================================
 # MAIN PLANNER FUNCTIONS
 # ============================================================================
 
-def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
+def build_plan(results: Iterable[FileResult], dest_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Build complete plan: TreePlan + Mapping rows + stats.
     """
-    preserve_structure = config.get("preserve_structure", None)  # back-compat
+    preserve_structure = config.get("preserve_structure", None)
     preserve_mode = config.get("preserve_structure_mode", None)
     scan_root = config.get("scan_root")
     pass_id = config.get("pass_id", 1)
 
+    # Load rules if enabled
+    rules = None
+    if config.get("use_rules") and config.get("rules_path"):
+        rules = load_rules(config["rules_path"])
+        if rules:
+            print(f"[sift][strategy] Loaded {len(rules.get('rules', []))} rules")
+
     mapping_rows: List[Dict[str, Any]] = []
 
     for result in results:
-        routed = route_file(result, scan_root)
+        routed = route_file(result, scan_root, rules)
         source_path = Path(routed["source_path"])
 
         target_path = build_target_path(
@@ -464,24 +496,23 @@ def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Di
             folder_coherence=None,
         )
 
-        row = {
-            "SourcePath": routed["source_path"],
-            "Domain": routed["domain"] or "",
-            "Kind": routed["kind"] or "",
-            "Entity": routed["entity"] or "",
-            "Year": str(routed["year"]) if routed["year"] else "",
-            "TargetPath": target_path,
-            "Confidence": f"{routed['confidence']:.2f}",
-            "Action": routed["action"],
-            "IsResidual": str(routed["is_residual"]),
-            "Why": routed["why"],
-            "PassId": str(pass_id),
-            "PreviousPassId": "",
-            "PreviousAction": "",
-            "PreviousConfidence": "",
-            "PreviousTargetPath": "",
-        }
+        # Create RoutingDecision object
+        decision = RoutingDecision(
+            source_path=routed["source_path"],
+            domain=routed["domain"],
+            kind=routed["kind"],
+            entity=routed["entity"],
+            year=routed["year"],
+            target_path=target_path,
+            confidence=routed["confidence"],
+            action=routed["action"],
+            is_residual=routed["is_residual"],
+            why=routed["why"],
+            pass_id=pass_id,
+        )
 
+        # Convert to CSV row dict
+        row = decision.to_csv_row()
         mapping_rows.append(row)
 
     # SMART recompute (coherence needs full mapping)
@@ -507,18 +538,8 @@ def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Di
                 preserve_mode="SMART",
                 folder_coherence=folder_coherence,
             )
-        if routed["is_residual"]:
-            action = "RESIDUAL"
-            target_path = ""
-        else:
-            action = routed.get("action") or routed.get("Action") or "RESIDUAL"
-            target_path = routed.get("target_path") or routed.get("TargetPath") or ""
-    if routed.get("is_residual") or routed.get("IsResidual"):
-        target_path = ""
 
-    mapping_rows = resolve_collisions_in_mapping(mapping_rows)
-
-    # Very minimal TreePlan (planner v2 doesn't build full nodes yet)
+    # Very minimal TreePlan
     tree_plan = {
         "root": str(dest_root),
         "root_id": "n_root",
@@ -541,17 +562,24 @@ def build_plan(results: Iterable, dest_root: Path, config: Dict[str, Any]) -> Di
 
 def replan_residuals(
     mapping_rows: List[Dict[str, Any]],
-    updated_results: Iterable,
+    updated_results: Iterable[FileResult],
     dest_root: Path,
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
     Residual-only refinement pass.
     """
-    preserve_structure = config.get("preserve_structure", None)  # back-compat
+    preserve_structure = config.get("preserve_structure", None)
     preserve_mode = config.get("preserve_structure_mode", None)
     scan_root = config.get("scan_root")
     pass_id = config.get("pass_id", 2)
+
+    # Load rules if enabled
+    rules = None
+    if config.get("use_rules") and config.get("rules_path"):
+        rules = load_rules(config["rules_path"])
+        if rules:
+            print(f"[sift][strategy] Loaded {len(rules.get('rules', []))} rules")
 
     def _is_true(v: Any) -> bool:
         return str(v).strip().lower() in ("true", "1", "yes", "y")
@@ -567,13 +595,13 @@ def replan_residuals(
         folder_coherence = compute_folder_coherence(mapping_rows, scan_root)
 
     for result in updated_results:
-        source_path = str(result.path if hasattr(result, "path") else result)
+        source_path = str(result.path)
         original = original_by_path.get(source_path)
 
         if not original or not _is_true(original.get("IsResidual")):
             continue
 
-        routed = route_file(result, scan_root)
+        routed = route_file(result, scan_root, rules)
 
         target_path = build_target_path(
             routed,
@@ -589,24 +617,27 @@ def replan_residuals(
         else:
             reclassified += 1
 
-        row = {
-            "SourcePath": routed["source_path"],
-            "Domain": routed["domain"] or "",
-            "Kind": routed["kind"] or "",
-            "Entity": routed["entity"] or "",
-            "Year": str(routed["year"]) if routed["year"] else "",
-            "TargetPath": target_path,
-            "Confidence": f"{routed['confidence']:.2f}",
-            "Action": routed["action"],
-            "IsResidual": str(routed["is_residual"]),
-            "Why": routed["why"],
-            "PassId": str(pass_id),
-            "PreviousPassId": original.get("PassId", ""),
-            "PreviousAction": original.get("Action", ""),
-            "PreviousConfidence": original.get("Confidence", ""),
-            "PreviousTargetPath": original.get("TargetPath", ""),
-        }
+        # Create RoutingDecision object
+        decision = RoutingDecision(
+            source_path=routed["source_path"],
+            domain=routed["domain"],
+            kind=routed["kind"],
+            entity=routed["entity"],
+            year=routed["year"],
+            target_path=target_path,
+            confidence=routed["confidence"],
+            action=routed["action"],
+            is_residual=routed["is_residual"],
+            why=routed["why"],
+            pass_id=pass_id,
+            previous_pass_id=original.get("PassId", ""),
+            previous_action=original.get("Action", ""),
+            previous_confidence=original.get("Confidence", ""),
+            previous_target_path=original.get("TargetPath", ""),
+        )
 
+        # Convert to CSV row dict
+        row = decision.to_csv_row()
         updated_mapping.append(row)
 
     # Add back all non-residual rows unchanged
@@ -634,83 +665,3 @@ def get_plan_summary(plan: Dict[str, Any]) -> str:
         f"  Residuals: {stats.get('residual_count', 0)} ({stats.get('residual_percentage', 0.0):.1f}%)",
     ]
     return "\n".join(lines)
-
-
-def detect_collisions_in_mapping(mapping_rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    """
-    Pre-compute collisions within the mapping itself (deterministic).
-
-    Returns dict: {original_target_path: collision_count}
-
-    This makes collision detection deterministic - doesn't depend on
-    what's already on disk.
-    """
-    target_counts: Dict[str, int] = {}
-
-    for row in mapping_rows:
-        target = row.get("TargetPath", "").strip()
-        if not target:
-            continue
-
-        # Normalize to str for counting
-        target_counts[target] = target_counts.get(target, 0) + 1
-
-    # Return only paths that have collisions (count > 1)
-    collisions = {
-        path: count - 1  # -1 because first occurrence isn't a collision
-        for path, count in target_counts.items()
-        if count > 1
-    }
-
-    return collisions
-
-
-def resolve_collisions_in_mapping(
-        mapping_rows: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
-    """
-    Resolve collisions deterministically within mapping.
-
-    Modifies TargetPath for duplicate destinations by appending __dup1, __dup2, etc.
-    Adds CollisionIndex field to track renames.
-
-    Returns new mapping with collisions resolved.
-    """
-    # Track how many times we've seen each target
-    target_occurrences: Dict[str, int] = {}
-
-    resolved_rows = []
-
-    for row in mapping_rows:
-        target = row.get("TargetPath", "").strip()
-
-        if not target:
-            resolved_rows.append(row)
-            continue
-
-        # Check if we've seen this target before
-        if target in target_occurrences:
-            # Collision! Generate deterministic rename
-            dup_index = target_occurrences[target]
-            target_occurrences[target] += 1
-
-            # Rename: insert __dupN before extension
-            target_path = Path(target)
-            new_name = f"{target_path.stem}__dup{dup_index}{target_path.suffix}"
-            new_target = str(target_path.parent / new_name)
-
-            # Create new row with updated target
-            new_row = row.copy()
-            new_row["TargetPath"] = new_target
-            new_row["CollisionIndex"] = str(dup_index)
-            new_row["OriginalTargetPath"] = target
-
-            resolved_rows.append(new_row)
-        else:
-            # First occurrence - no collision
-            target_occurrences[target] = 1
-            new_row = row.copy()
-            new_row["CollisionIndex"] = "0"
-            resolved_rows.append(new_row)
-
-    return resolved_rows

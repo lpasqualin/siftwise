@@ -7,6 +7,7 @@ based on confidence, rules, and entities.
 
 from pathlib import Path
 from typing import Dict, Any
+from siftwise.schemas import PlanConfig
 
 
 def run(args):
@@ -20,8 +21,6 @@ def run(args):
     from siftwise.state.io import ensure_sift_dir, write_treeplan, write_mapping, write_preview
     from siftwise.analyze.analyzer import analyze_paths
     from siftwise.strategy import build_plan, get_plan_summary
-    from siftwise.strategy.preserve import compute_preserve_mode
-    from siftwise.state.io import write_entities_csv, aggregate_entities_from_mapping
 
     root = Path(args.root).resolve()
     dest_root = Path(args.dest_root).resolve()
@@ -39,14 +38,11 @@ def run(args):
     paths = [p for p in root.rglob("*") if p.is_file()]
     print(f"[sift] Found {len(paths)} files")
 
-    preserve_mode = compute_preserve_mode(root, paths, getattr(args, "preserve_mode", "smart"))
-    print(f"[sift] preserve_mode = {preserve_mode}")
-
     # 2. Run analyzer (first pass)
     print(f"[sift] Analyzing files...")
     results = analyze_paths(paths=paths, root_out=dest_root, refinement_iteration=1)
 
-    # (Optional) initial residual report based on analyzer flag, still fine
+    # Initial residual report
     residual_count = sum(1 for r in results if getattr(r, "is_residual", False))
     if residual_count > 0:
         print(
@@ -59,20 +55,30 @@ def run(args):
 
     use_rules = getattr(args, "use_rules", False)
 
-    # ✅ SINGLE config dict (do not overwrite later)
-    config: Dict[str, Any] = {
+    # Build config dict
+    config = {
         "use_rules": use_rules,
         "scan_root": root,
-        "preserve_structure_mode": "SMART",   # <-- THIS is the key
+        "preserve_structure_mode": "SMART",
         "pass_id": 1,
     }
 
     # Optional: look for rules.yaml (prefer .sift, fallback dest root)
-    rules_path = sift_dir / "rules.yaml"
-    if not rules_path.exists():
-        rules_path = dest_root / "rules.yaml"
+    # Initialize rules_path to None first
+    rules_path = None
 
-    if rules_path.exists():
+    # Check in .sift directory first
+    candidate_path = sift_dir / "rules.yaml"
+    if candidate_path.exists():
+        rules_path = candidate_path
+    else:
+        # Fallback to dest_root
+        candidate_path = dest_root / "rules.yaml"
+        if candidate_path.exists():
+            rules_path = candidate_path
+
+    # Only add to config if we found a rules file
+    if rules_path is not None:
         config["rules_path"] = rules_path
         print(f"[sift] Loading rules from {rules_path}")
 
@@ -90,14 +96,6 @@ def run(args):
     write_mapping(sift_dir, plan["mapping_rows"])
     write_preview(sift_dir, from_stats)
 
-    # Generate Entities.csv from mapping
-    print(f"[sift] Generating entities aggregation...")
-    entities_data = aggregate_entities_from_mapping(plan['mapping_rows'])
-    if entities_data:
-        write_entities_csv(sift_dir, entities_data)
-        print(f"[sift] Found {len(entities_data)} unique entities")
-    else:
-        print(f"[sift] No entities detected")
     # 5. Print summary
     print(f"\n[sift] Draft complete!")
     print(get_plan_summary(plan))
