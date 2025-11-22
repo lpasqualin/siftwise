@@ -106,5 +106,3 @@ def run(args):
 
     if from_stats.get("residual_count", 0) > 0:
         print(f"[sift]   3. Refine: sift refine-residuals --dest-root \"{dest_root}\" --root \"{root}\"")
-# Write tree plan
-    treeplan_path = write_treeplan(sift_dir, plan['tree_plan'])
