@@ -339,10 +339,28 @@ def determine_action(confidence: float, is_residual: bool, label: str = "") -> T
     Determine action and residual status based on confidence.
 
     Strategy layer owns this logic - analyzer just classifies.
+
+    IMPORTANT: The analyzer determines residual status. Strategy layer only
+    decides the ACTION based on confidence. Don't re-mark non-residuals as residuals!
     """
-    # Residuals always skip
+    # Residuals always skip (analyzer marked them)
     if is_residual:
         return "Skip", True
+
+    # Special handling for empty/large files
+    if label in ["empty_files", "large_files"]:
+        return "Suggest", False
+
+    # Confidence-based actions for NON-residuals
+    # Note: is_residual stays False even if we Skip due to low confidence
+    if confidence >= 0.85:
+        return "Move", False
+    elif confidence >= 0.75:
+        return "Suggest", False
+    else:
+        # Low confidence: Skip but DON'T mark as residual
+        # The analyzer already decided this wasn't residual
+        return "Skip", False
 
     # Special handling for empty/large files
     if label in ["empty_files", "large_files"]:
