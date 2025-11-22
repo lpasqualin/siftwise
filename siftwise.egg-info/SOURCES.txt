@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 siftwise/__init__.py
 siftwise/schemas.py
+siftwise/suggest-to-move.py
 siftwise.egg-info/PKG-INFO
 siftwise.egg-info/SOURCES.txt
 siftwise.egg-info/dependency_links.txt
@@ -20,6 +21,7 @@ siftwise/commands/__init__.py
 siftwise/commands/cli.py
 siftwise/commands/draft_structure.py
 siftwise/commands/execute.py
+siftwise/commands/promote_suggested.py
 siftwise/commands/refine_residuals.py
 siftwise/commands/review_structure.py
 siftwise/execute/__init__.py

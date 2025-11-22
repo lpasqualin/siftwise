@@ -1,5 +1,5 @@
 import argparse
-
+from siftwise.commands.promote_suggested import promote_suggested
 
 def main():
     p = argparse.ArgumentParser(prog="sift", description="Siftwise CLI - Intelligent File Organization")
@@ -31,6 +31,16 @@ def main():
     p_exec.add_argument("--plan", help="Override plan path (defaults to <dest-root>/.sift/TreePlan.json)")
     p_exec.add_argument("--mapping", help="Override mapping path (defaults to <dest-root>/.sift/Mapping.csv)")
     p_exec.add_argument("--what-if", action="store_true", help="Dry-run only")
+    # PROMOTE-SUGGESTED (utility)
+    p_promote = sub.add_parser(
+        "promote-suggested",
+        help="Promote all Suggest actions in Mapping.csv to Move"
+    )
+    p_promote.add_argument(
+        "--dest-root",
+        required=True,
+        help='Destination root where <dest-root>/.sift lives'
+    )
 
     # REFINE-RESIDUALS (Phase 2)
     p_refine = sub.add_parser(
@@ -92,6 +102,13 @@ def main():
     elif args.cmd == "execute":
         from .execute import run as exec_run
         exec_run(args)
+    elif args.cmd == "promote-suggested":
+        res = promote_suggested(args.dest_root)
+        print("[sift] promote-suggested complete")
+        print(f"[sift] Mapping: {res.mapping_path}")
+        print(f"[sift] Suggest before: {res.before_suggest}")
+        print(f"[sift] Promoted to Move: {res.promoted}")
+        print(f"[sift] Suggest remaining: {res.after_suggest}")
     elif args.cmd == "refine-residuals":
         from .refine_residuals import run as refine_run
         refine_run(args)

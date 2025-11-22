@@ -106,3 +106,19 @@ def run(args):
 
     if from_stats.get("residual_count", 0) > 0:
         print(f"[sift]   3. Refine: sift refine-residuals --dest-root \"{dest_root}\" --root \"{root}\"")
+# --- Tip: promote suggested -> move ---
+try:
+    import pandas as pd
+    from pathlib import Path
+
+    mapping_path = Path(dest_root) / ".sift" / "Mapping.csv"
+    if mapping_path.exists():
+        df_tip = pd.read_csv(mapping_path)
+        suggest_count = int((df_tip.get("Action") == "Suggest").sum())
+        if suggest_count > 0:
+            print(f"\n[sift] Note: {suggest_count} files are marked Suggest.")
+            print("[sift] Tip: If you're confident, promote all Suggest → Move with:")
+            print(f'[sift]   sift promote-suggested --dest-root "{dest_root}"')
+except Exception:
+    # Tip is non-critical; never break draft if pandas/path hiccups
+    pass
